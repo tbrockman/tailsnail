@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theolol/tailsnail/internal/discovery"
 	"github.com/theolol/tailsnail/internal/netplay"
@@ -120,6 +121,7 @@ func (m *Model) viewBrowser() string {
 	rows := m.browser.rows()
 
 	var body string
+	var anchor rowAnchor
 	switch {
 	case len(rows) == 0 && m.browser.snapshot.At.IsZero():
 		body = m.emptyBrowser("looking for peers"+g.Ellipsis, "")
@@ -129,13 +131,20 @@ func (m *Model) viewBrowser() string {
 			fmt.Sprintf("checked %d online %s on your tailnet",
 				m.browser.snapshot.Candidates, plural(m.browser.snapshot.Candidates, "device", "devices")))
 	default:
-		body = m.browserTable(rows)
+		body, anchor = m.browserTable(rows)
 	}
 
-	subtitle := m.browserSubtitle()
-	return m.chrome("lobbies", subtitle, body, []hint{
+	frame := m.chrome("lobbies", m.browserSubtitle(), body, []hint{
 		{"↑/↓", "move"}, {"enter", "join"}, {"R", "refresh"},
 		{"h", "host"}, {"esc", "back"}, {"q", "quit"},
+	})
+	// The table is left-aligned directly under the two-line header.
+	const bodyTop = 2
+	return m.withTooltip(frame, tooltip{
+		text:   anchor.text,
+		row:    bodyTop + anchor.row,
+		col:    anchor.col + 1,
+		prefer: placeBelow,
 	})
 }
 
@@ -170,14 +179,16 @@ func (m *Model) emptyBrowser(title, detail string) string {
 }
 
 // browserTable renders the peer list.
-func (m *Model) browserTable(rows []discovery.Peer) string {
+func (m *Model) browserTable(rows []discovery.Peer) (string, rowAnchor) {
 	th := m.style.Theme
 	g := m.style.Glyphs
-	width := min(max(m.width-4, 40), 100)
 
 	head := m.style.FaintText("  " +
 		pad("lobby", 20) + pad("host", 20) + pad("arena", 16) + pad("seats", 8) + "state")
-	out := []string{head, m.style.FaintText(strings.Repeat(g.Horizontal, width))}
+	// The rule spans the table, not an arbitrary width, so it lines up with
+	// the columns above and below it.
+	out := []string{head, m.style.FaintText(strings.Repeat(g.Horizontal, ansi.StringWidth(head)))}
+	var anchor rowAnchor
 
 	visible := max(m.bodyHeight()-3, 1)
 	start := 0
@@ -228,36 +239,48 @@ func (m *Model) browserTable(rows []discovery.Peer) string {
 			m.style.DimText(pad(arena, 16)) +
 			m.style.DimText(pad(seats, 8)) +
 			state
-		out = append(out, line)
-
 		if selected {
-			out = append(out, m.style.FaintText("     "+m.peerDetail(p)))
+			anchor = rowAnchor{row: len(out), col: ansi.StringWidth(line), text: m.peerDetail(p)}
 		}
+		out = append(out, line)
 	}
-	return lipgloss.NewStyle().Width(m.width).Render(lipgloss.JoinVertical(lipgloss.Left, out...))
+	return lipgloss.NewStyle().Width(m.width).Render(lipgloss.JoinVertical(lipgloss.Left, out...)), anchor
 }
 
-// peerDetail is the extra line shown under the highlighted peer.
+// peerDetail is the extra information shown for the highlighted peer.
+//
+// It is laid out as lines rather than one bullet-separated run, because a run
+// that wraps inside a popover breaks in the middle of a bullet and reads as
+// though a value has gone missing.
 func (m *Model) peerDetail(p discovery.Peer) string {
-	parts := []string{p.DNSName}
-	if p.Login != "" {
-		parts = append(parts, p.Login)
+	var lines []string
+	if p.DNSName != "" {
+		lines = append(lines, p.DNSName)
 	}
+	if p.Login != "" {
+		lines = append(lines, p.Login)
+	}
+
+	var stats []string
 	if p.Addr.IsValid() {
-		parts = append(parts, p.Addr.String())
+		stats = append(stats, p.Addr.String())
 	}
 	if p.RTT > 0 {
-		parts = append(parts, fmt.Sprintf("%dms", p.RTT.Milliseconds()))
+		stats = append(stats, fmt.Sprintf("%dms", p.RTT.Milliseconds()))
 	}
 	if p.AppVersion != "" {
-		parts = append(parts, "v"+p.AppVersion)
+		stats = append(stats, "v"+p.AppVersion)
 	}
+	if len(stats) > 0 {
+		lines = append(lines, strings.Join(stats, "  "+m.style.Glyphs.Bullet+"  "))
+	}
+
 	if a := p.Advert; a != nil {
 		wrap := "walled"
 		if a.Config.Wrap {
 			wrap = "wrap-around"
 		}
-		parts = append(parts, fmt.Sprintf("%d ticks/s, %s", a.Config.TickRate, wrap))
+		lines = append(lines, fmt.Sprintf("%d ticks/s, %s", a.Config.TickRate, wrap))
 	}
-	return truncate(strings.Join(parts, "  "+m.style.Glyphs.Bullet+"  "), max(m.width-8, 20))
+	return strings.Join(lines, "\n")
 }

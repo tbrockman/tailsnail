@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theolol/tailsnail/internal/proto"
 	"github.com/theolol/tailsnail/internal/store"
@@ -20,6 +21,15 @@ const (
 	tabLeaderboard historyTab = iota
 	tabMatches
 )
+
+// rowAnchor is where a table's selected row ended up, so a popover can attach
+// to it after the table has been composed.
+type rowAnchor struct {
+	// row is the offset within the table block, and col the column just past
+	// the row's text.
+	row, col int
+	text     string
+}
 
 // historyState is the history and leaderboard screen.
 type historyState struct {
@@ -88,18 +98,31 @@ func (m *Model) updateHistory(msg tea.KeyMsg) tea.Cmd {
 func (m *Model) viewHistory() string {
 	tabs := m.historyTabs()
 	var body string
+	var anchor rowAnchor
 	if m.history.tab == tabLeaderboard {
-		body = m.leaderboardTable()
+		body, anchor = m.leaderboardTable()
 	} else {
-		body = m.matchTable()
+		body, anchor = m.matchTable()
 	}
 
 	subtitle := fmt.Sprintf("%d %s stored", len(m.history.records),
 		plural(len(m.history.records), "match", "matches"))
 	content := lipgloss.JoinVertical(lipgloss.Left, tabs, "", body)
-	return m.chrome("history", subtitle, content, []hint{
+	frame := m.chrome("history", subtitle, content, []hint{
 		{"tab/←→", "switch view"}, {"↑/↓", "move"}, {"R", "reload"},
 		{"esc", "back"}, {"q", "quit"},
+	})
+
+	// The table is left-aligned at the top of the body, which begins after the
+	// two-line header, the tab strip and its blank line.
+	const bodyTop = 2 + 2
+	return m.withTooltip(frame, tooltip{
+		text: anchor.text,
+		row:  bodyTop + anchor.row,
+		col:  anchor.col + 1,
+		// A row's extra detail reads naturally hanging under it, and there is
+		// rarely room beside a full-width table anyway.
+		prefer: placeBelow,
 	})
 }
 
@@ -116,7 +139,7 @@ func (m *Model) historyTabs() string {
 }
 
 // leaderboardTable renders aggregate standings.
-func (m *Model) leaderboardTable() string {
+func (m *Model) leaderboardTable() (string, rowAnchor) {
 	th := m.style.Theme
 	g := m.style.Glyphs
 
@@ -126,11 +149,12 @@ func (m *Model) leaderboardTable() string {
 			"",
 			m.style.FaintText("play a game, or let tailsnail sync history"),
 			m.style.FaintText("from a peer that already has some"),
-		), m.bodyHeight()-3)
+		), m.bodyHeight()-3), rowAnchor{}
 	}
 
 	rows := []string{m.style.FaintText("  " + pad("#", 4) + pad("player", 22) +
 		pad("wins", 7) + pad("played", 8) + pad("rate", 7) + pad("kills", 7) + "best")}
+	var anchor rowAnchor
 
 	visible := max(m.bodyHeight()-5, 1)
 	start := 0
@@ -153,32 +177,42 @@ func (m *Model) leaderboardTable() string {
 		if ps.PubKey == m.app.Ident.PubKey() {
 			name += " (you)"
 		}
-		rows = append(rows, marker+
-			m.style.FaintText(pad(fmt.Sprintf("%d", i+1), 4))+
-			m.style.Text(nameColor, pad(truncate(name, 21), 22))+
-			m.style.Text(th.Ok, pad(fmt.Sprintf("%d", ps.Wins), 7))+
-			m.style.DimText(pad(fmt.Sprintf("%d", ps.Matches), 8))+
-			m.style.DimText(pad(fmt.Sprintf("%.0f%%", ps.WinRate()*100), 7))+
-			m.style.DimText(pad(fmt.Sprintf("%d", ps.Kills), 7))+
-			m.style.DimText(fmt.Sprintf("%d", ps.BestLength)))
-		if i == m.history.cursor && ps.Login != "" {
-			rows = append(rows, m.style.FaintText("      "+ps.Login+"  "+g.Bullet+"  "+proto.ShortKey(ps.PubKey)))
+		row := marker +
+			m.style.FaintText(pad(fmt.Sprintf("%d", i+1), 4)) +
+			m.style.Text(nameColor, pad(truncate(name, 21), 22)) +
+			m.style.Text(th.Ok, pad(fmt.Sprintf("%d", ps.Wins), 7)) +
+			m.style.DimText(pad(fmt.Sprintf("%d", ps.Matches), 8)) +
+			m.style.DimText(pad(fmt.Sprintf("%.0f%%", ps.WinRate()*100), 7)) +
+			m.style.DimText(pad(fmt.Sprintf("%d", ps.Kills), 7)) +
+			m.style.DimText(fmt.Sprintf("%d", ps.BestLength))
+		if i == m.history.cursor {
+			detail := ps.Login
+			if detail != "" {
+				detail += "  " + g.Bullet + "  "
+			}
+			anchor = rowAnchor{
+				row:  len(rows),
+				col:  ansi.StringWidth(row),
+				text: detail + "key " + proto.ShortKey(ps.PubKey),
+			}
 		}
+		rows = append(rows, row)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return lipgloss.JoinVertical(lipgloss.Left, rows...), anchor
 }
 
 // matchTable renders the recent-match list with attestation status.
-func (m *Model) matchTable() string {
+func (m *Model) matchTable() (string, rowAnchor) {
 	th := m.style.Theme
 	g := m.style.Glyphs
 
 	if len(m.history.records) == 0 {
-		return m.center(m.style.DimText("no matches recorded yet"), m.bodyHeight()-3)
+		return m.center(m.style.DimText("no matches recorded yet"), m.bodyHeight()-3), rowAnchor{}
 	}
 
 	rows := []string{m.style.FaintText("  " + pad("when", 16) + pad("lobby", 20) +
 		pad("winner", 18) + pad("players", 9) + "attestation")}
+	var anchor rowAnchor
 
 	visible := max(m.bodyHeight()-5, 1)
 	start := 0
@@ -205,18 +239,18 @@ func (m *Model) matchTable() string {
 			status = m.style.Text(th.Warn, g.Bullet+" "+rec.AttestationSummary())
 		}
 
-		rows = append(rows, marker+
-			m.style.DimText(pad(relativeTime(rec.Result.Ended(), m.now), 16))+
-			m.style.Text(th.Fg, pad(truncate(rec.Result.LobbyName, 19), 20))+
-			m.style.Text(th.Accent, pad(truncate(winner, 17), 18))+
-			m.style.DimText(pad(fmt.Sprintf("%d", len(rec.Result.Participants)), 9))+
-			status)
-
+		row := marker +
+			m.style.DimText(pad(relativeTime(rec.Result.Ended(), m.now), 16)) +
+			m.style.Text(th.Fg, pad(truncate(rec.Result.LobbyName, 19), 20)) +
+			m.style.Text(th.Accent, pad(truncate(winner, 17), 18)) +
+			m.style.DimText(pad(fmt.Sprintf("%d", len(rec.Result.Participants)), 9)) +
+			status
 		if i == m.history.cursor {
-			rows = append(rows, m.matchDetail(rec))
+			anchor = rowAnchor{row: len(rows), col: ansi.StringWidth(row), text: m.matchDetail(rec)}
 		}
+		rows = append(rows, row)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return lipgloss.JoinVertical(lipgloss.Left, rows...), anchor
 }
 
 // matchDetail is the expanded line under the highlighted match.
@@ -230,10 +264,9 @@ func (m *Model) matchDetail(rec proto.AttestedRecord) string {
 			names = append(names, fmt.Sprintf("%d. %s", pl.Place, p.DisplayName))
 		}
 	}
-	detail := fmt.Sprintf("%d×%d %s  %s  %s  %s  %s",
+	return fmt.Sprintf("%d×%d %s  %s  %s\n%s",
 		cfg.Width, cfg.Height, cfg.Mode, m.style.Glyphs.Bullet,
-		duration(length), m.style.Glyphs.Bullet, strings.Join(names, "  "))
-	return m.style.FaintText("      " + truncate(detail, max(m.width-8, 20)))
+		duration(length), strings.Join(names, "  "))
 }
 
 // historyRefreshInterval bounds how often the history screen re-reads the

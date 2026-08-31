@@ -42,9 +42,9 @@ type Glyphs struct {
 	Cross    string
 	Arrow    string
 	Ellipsis string
-	// PointLeft, PointRight and PointUp tie a popover to the text it
-	// describes, whichever side there was room on.
-	PointLeft, PointRight, PointUp string
+	// PointLeft, PointRight, PointUp and PointDown tie a popover to the text
+	// it describes, whichever side there was room on.
+	PointLeft, PointRight, PointUp, PointDown string
 	// Spinner frames for connecting and scanning states.
 	Spinner []string
 	// Meter fills a progress or countdown bar.
@@ -66,7 +66,7 @@ var Unicode = Glyphs{
 	Horizontal: "─", Vertical: "│",
 
 	Bullet: "•", Check: "✓", Cross: "✗", Arrow: "›", Ellipsis: "…",
-	PointLeft: "◂", PointRight: "▸", PointUp: "▴",
+	PointLeft: "◂", PointRight: "▸", PointUp: "▴", PointDown: "▾",
 	// A shell-like spiral stands in for the snail where emoji cannot be
 	// trusted to measure correctly.
 	Logo:      "◎",
@@ -90,7 +90,7 @@ var ASCIIGlyphs = Glyphs{
 	Horizontal: "-", Vertical: "|",
 
 	Bullet: "*", Check: "x", Cross: "-", Arrow: ">", Ellipsis: "...",
-	PointLeft: "<", PointRight: ">", PointUp: "^",
+	PointLeft: "<", PointRight: ">", PointUp: "^", PointDown: "v",
 	Logo:      "@",
 	Spinner:   []string{"|", "/", "-", "\\"},
 	MeterFull: "#", MeterEmpty: ".",

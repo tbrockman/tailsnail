@@ -383,15 +383,20 @@ debug log overlay. Settings are reachable from any of them with `,`; enter
 saves and escape discards, and because theme and glyph changes apply live so
 they can be judged, discarding actively restores the previous look.
 
-Field descriptions are drawn as a popover attached to the text they describe,
-the way a tooltip attaches to an element rather than to the page. It overlaps
-whatever is beneath, except that it drops below the row instead of falling
-back to the left — covering the label of the very field being described is the
-one occlusion worth avoiding. Descriptions are not inline underneath the
-selection, because that changes the panel's height as the selection moves, so
+Anywhere a list describes its selection — the menu, both host and settings
+forms, the lobby browser, the leaderboard and the match list — the description
+is a popover attached to the text it describes, the way a tooltip attaches to
+an element rather than to the page. It overlaps whatever is beneath, and falls
+through beside → below → above → left until one placement fits the space
+actually available, so a popover never simply disappears because the window is
+an awkward shape. Left is last because it is the only placement that covers
+the very text being described. Descriptions are never inline underneath the
+selection: that changes the container's height as the selection moves, so
 every row below shifts by a line on each keypress and the list becomes
-impossible to scan. Every field is guaranteed exactly one row: a value too
-long to fit is trimmed rather than wrapped.
+impossible to scan. Every form field is guaranteed exactly one row — a value
+too long to fit is trimmed rather than wrapped — and a text field sizes itself
+to its contents so the popover attaches to what was typed rather than to the
+end of an empty box.
 
 Containers are sized to their contents rather than to a fixed width, and
 transient notices occupy a permanently reserved line, so nothing on screen

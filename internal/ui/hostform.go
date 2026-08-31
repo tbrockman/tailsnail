@@ -48,6 +48,7 @@ type formState struct {
 func (f *formState) editFrom(st proto.LobbyState) {
 	f.cfg = st.Config
 	f.name.SetValue(st.Name)
+	fitInput(&f.name)
 	f.editing = true
 	f.cursor = 0
 	f.name.Blur()
@@ -91,7 +92,7 @@ func (m *Model) initForm() {
 	name.Prompt = ""
 	name.CharLimit = 24
 	name.SetValue(cfg.Name)
-	name.Width = 24
+	fitInput(&name)
 
 	m.form = formState{cfg: cfg, name: name}
 	m.form.fields = []formField{
@@ -252,6 +253,7 @@ func (m *Model) updateForm(msg tea.KeyMsg) tea.Cmd {
 	if field.text {
 		var cmd tea.Cmd
 		m.form.name, cmd = m.form.name.Update(msg)
+		fitInput(&m.form.name)
 		return cmd
 	}
 	if msg.String() == "q" {
@@ -422,6 +424,16 @@ func (m *Model) sizeAdvice() string {
 		return m.style.Text(th.Ok, m.style.Glyphs.Check+" ") + m.style.FaintText(text)
 	}
 	return m.style.Text(th.Warn, m.style.Glyphs.Bullet+" ") + m.style.Text(th.Warn, text)
+}
+
+// fitInput sizes a text field to its own contents.
+//
+// A text input pads its value out to its configured width, so a popover
+// anchored after the field attached to the end of an empty box rather than to
+// what had been typed, leaving a gap that closed as the user filled the field.
+// Sizing the input to its value puts the two together.
+func fitInput(ti *textinput.Model) {
+	ti.Width = max(len([]rune(ti.Value())), 1)
 }
 
 // clampInt bounds v to [lo, hi].

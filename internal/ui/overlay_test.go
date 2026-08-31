@@ -302,3 +302,112 @@ func TestModalFitsANarrowFrame(t *testing.T) {
 		}
 	}
 }
+
+func TestTooltipFallsBackThroughPlacements(t *testing.T) {
+	// A popover should adapt to the space it actually has rather than
+	// vanishing because its preferred side does not fit.
+	cases := []struct {
+		name   string
+		width  int
+		height int
+		row    int
+		col    int
+		prefer placement
+		// wantRowsBelow says the box is expected under the anchor.
+		wantBelow bool
+	}{
+		{"room on the right", 100, 20, 8, 30, placeRight, false},
+		{"no room right, drops below", 60, 20, 4, 52, placeRight, true},
+		{"prefers below when asked", 100, 20, 4, 20, placeBelow, true},
+		{"below is full, goes above", 100, 12, 10, 20, placeBelow, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			m.width, m.height = tc.width, tc.height
+			frame := strings.TrimRight(
+				strings.Repeat(strings.Repeat(".", tc.width)+"\n", tc.height), "\n")
+
+			out := m.withTooltip(frame, tooltip{
+				text: "a description of some length", row: tc.row, col: tc.col, prefer: tc.prefer,
+			})
+			if out == frame {
+				t.Fatal("no placement was found at all")
+			}
+			for i, line := range strings.Split(out, "\n") {
+				if w := ansi.StringWidth(line); w > tc.width {
+					t.Errorf("line %d is %d cells, want at most %d", i, w, tc.width)
+				}
+			}
+			if lipgloss.Height(out) != tc.height {
+				t.Fatalf("the frame grew to %d lines", lipgloss.Height(out))
+			}
+
+			lines := strings.Split(stripANSI(out), "\n")
+			if tc.wantBelow {
+				// A box hung under the anchor starts on the very next row.
+				if !strings.Contains(lines[tc.row+1], "╭") && !strings.Contains(lines[tc.row+1], "+") {
+					t.Errorf("expected the box to start below the anchor:\n%s", stripANSI(out))
+				}
+			} else if tc.prefer == placeRight {
+				// A box beside the anchor puts its pointer on the anchor row.
+				if !strings.Contains(lines[tc.row], m.style.Glyphs.PointLeft) {
+					t.Errorf("expected the box beside the anchor:\n%s", stripANSI(out))
+				}
+			}
+			if !strings.Contains(flatten(stripANSI(out)), "a description of some length") {
+				t.Errorf("the description text is missing:\n%s", stripANSI(out))
+			}
+		})
+	}
+}
+
+func TestTooltipPrefersBesideWhenBothWouldFit(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 120, 24
+	frame := strings.TrimRight(strings.Repeat(strings.Repeat(".", 120)+"\n", 24), "\n")
+
+	out := m.withTooltip(frame, tooltip{text: "beside me", row: 10, col: 40})
+	line := stripANSI(strings.Split(out, "\n")[10])
+	if !strings.Contains(line, m.style.Glyphs.PointLeft) {
+		t.Errorf("the popover did not attach beside the anchor: %q", line)
+	}
+}
+
+func TestTooltipNeverGrowsTheFrameAtAnySize(t *testing.T) {
+	m := newTestModel(t)
+	for _, w := range []int{20, 40, 62, 80, 120, 200} {
+		for _, h := range []int{6, 10, 20, 40} {
+			m.width, m.height = w, h
+			frame := strings.TrimRight(strings.Repeat(strings.Repeat(".", w)+"\n", h), "\n")
+			for _, col := range []int{0, w / 4, w / 2, w - 3, w} {
+				for _, prefer := range []placement{placeRight, placeBelow} {
+					out := m.withTooltip(frame, tooltip{
+						text: "some description text", row: h / 2, col: col, prefer: prefer,
+					})
+					if lipgloss.Height(out) != h {
+						t.Fatalf("%dx%d col %d: height became %d", w, h, col, lipgloss.Height(out))
+					}
+					for i, line := range strings.Split(out, "\n") {
+						if got := ansi.StringWidth(line); got > w {
+							t.Fatalf("%dx%d col %d: line %d is %d cells", w, h, col, i, got)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// flatten collapses runs of whitespace and drops box-drawing characters, so a
+// wrapped description can be matched against the text it was built from.
+func flatten(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '│', '╭', '╮', '╰', '╯', '─', '|', '+', '-', '◂', '▸', '▴', '▾', '<', '>', '^', 'v':
+			return ' '
+		}
+		return r
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
+}

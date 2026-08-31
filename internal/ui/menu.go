@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // menuItem is one entry on the main menu.
@@ -56,9 +57,11 @@ func (m *Model) initMenu() {
 		{
 			title: "settings",
 			desc:  "theme, glyphs, display name",
+			// Everything routes through openSettings so the discard snapshot
+			// is always taken; entering the screen any other way left it with
+			// an empty name to "restore" on escape.
 			action: func(m *Model) tea.Cmd {
-				m.screen = screenSettings
-				m.returnTo = screenMenu
+				m.openSettings()
 				return nil
 			},
 		},
@@ -95,36 +98,41 @@ func (m *Model) viewMenu() string {
 	th := m.style.Theme
 	g := m.style.Glyphs
 
-	rows := make([]string, 0, len(m.menu.items)*2)
+	rows := make([]string, 0, len(m.menu.items))
+	selectedRow, selectedWidth := 0, 0
 	for i, item := range m.menu.items {
-		selected := i == m.menu.cursor
 		marker := "  "
 		title := m.style.Text(th.Dim, item.title)
-		if selected {
-			// The caret breathes so the selection is obvious without colour.
+		if i == m.menu.cursor {
 			marker = m.style.Accent(g.Arrow + " ")
 			title = m.style.Text(th.Accent, item.title)
 		}
-		number := m.style.FaintText(fmt.Sprintf("%d ", i+1))
-		rows = append(rows, marker+number+title)
-		if selected {
-			rows = append(rows, m.style.FaintText("     "+item.desc))
-		} else {
-			rows = append(rows, "")
+		row := marker + m.style.FaintText(fmt.Sprintf("%d ", i+1)) + title
+		if i == m.menu.cursor {
+			// The panel's top border sits above the first row.
+			selectedRow = 1 + len(rows)
+			selectedWidth = ansi.StringWidth(row)
 		}
+		rows = append(rows, row)
 	}
 
-	panel := m.style.Panel().Width(min(max(m.width-8, 30), 52)).Render(
-		lipgloss.JoinVertical(lipgloss.Left, rows...))
+	inner := min(max(naturalWidth(rows), 22), max(m.width-8, 20))
+	panel := m.style.Panel().Width(inner + 2).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 
-	body := lipgloss.JoinVertical(lipgloss.Center,
-		m.logo(),
-		"",
-		panel,
-		"",
-		m.style.FaintText(m.storeSummary()),
-	)
-	return m.chrome("", "", m.center(body, m.bodyHeight()), []hint{
+	logo := m.logo()
+	footer := m.style.FaintText(m.storeSummary())
+	body := lipgloss.JoinVertical(lipgloss.Center, logo, "", panel, "", footer)
+
+	frame, top, left := m.place(body, m.bodyHeight())
+	panelLeft := left + (lipgloss.Width(body)-lipgloss.Width(panel))/2
+	panelTop := top + lipgloss.Height(logo) + 1
+	frame = m.withTooltip(frame, tooltip{
+		text: m.menu.items[m.menu.cursor].desc,
+		row:  panelTop + selectedRow,
+		col:  panelLeft + 2 + selectedWidth + 1,
+	})
+
+	return m.chrome("", "", frame, []hint{
 		{"↑/↓", "move"}, {"enter", "select"}, {"1-5", "jump"},
 		{"ctrl+l", "logs"}, {"q", "quit"},
 	})

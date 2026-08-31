@@ -43,7 +43,8 @@ type settingsState struct {
 func (s *settingsState) begin(m *Model) {
 	s.original = m.app.Settings
 	s.origName = m.app.Ident.DisplayName
-	s.name.SetValue(m.app.Ident.DisplayName)
+	s.name.SetValue(s.origName)
+	fitInput(&s.name)
 	s.dirty = false
 	s.cursor = 0
 	s.name.Blur()
@@ -54,8 +55,8 @@ func (m *Model) initSettings() {
 	name := textinput.New()
 	name.Prompt = ""
 	name.CharLimit = 24
-	name.Width = 24
 	name.SetValue(m.app.Ident.DisplayName)
+	fitInput(&name)
 
 	m.settings = settingsState{name: name}
 	m.settings.fields = []settingField{
@@ -217,6 +218,7 @@ func (m *Model) updateSettings(msg tea.KeyMsg) tea.Cmd {
 	if field.text {
 		var cmd tea.Cmd
 		m.settings.name, cmd = m.settings.name.Update(msg)
+		fitInput(&m.settings.name)
 		m.settings.dirty = true
 		return cmd
 	}
@@ -244,8 +246,13 @@ func (m *Model) discardSettings() tea.Cmd {
 		proto.SanitizeDisplayName(m.settings.name.Value()) != m.settings.origName
 
 	m.app.Settings = m.settings.original
-	m.app.Ident.DisplayName = m.settings.origName
-	m.settings.name.SetValue(m.settings.origName)
+	// Restoring an empty name would be a data loss, not a discard: it can only
+	// mean the snapshot was never taken, so keep what is already there.
+	if m.settings.origName != "" {
+		m.app.Ident.DisplayName = m.settings.origName
+		m.settings.name.SetValue(m.settings.origName)
+	}
+	fitInput(&m.settings.name)
 	m.settings.dirty = false
 	m.restyle()
 	m.settings.dirty = false

@@ -87,6 +87,18 @@ func naturalWidth(rows []string) int {
 	return w
 }
 
+// placement is where a popover sits relative to the text it describes.
+type placement int
+
+const (
+	// placeRight is the default: beside the text, reading on from it.
+	placeRight placement = iota
+	// placeBelow hangs the box under the text, notched into its top border.
+	placeBelow
+	placeAbove
+	placeLeft
+)
+
 // tooltip is a description anchored to a specific point in the frame.
 type tooltip struct {
 	text string
@@ -95,12 +107,41 @@ type tooltip struct {
 	// the container's edge, the way a tooltip attaches to the element it
 	// belongs to and not to the page.
 	row, col int
+	// prefer is where to try first. Whatever is asked for, the box falls back
+	// through the other placements until one fits the space actually
+	// available, so a popover never simply disappears because the window is an
+	// awkward shape.
+	prefer placement
 }
 
-// withTooltip composites a description box attached to the text it describes.
+// Popover sizing. The box is never narrower than minimum — below that a
+// description wraps into unreadable slivers — and never wider than preferred.
+const (
+	tipChrome    = 4 // the box's own border and padding
+	tipGap       = 1 // the pointer
+	tipPreferred = 30
+	tipMinimum   = 14
+)
+
+// fallbackOrder returns the placements to try, starting from the preferred
+// one. Left is always last: it is the only placement that covers the text
+// being described, which is the one thing worth avoiding.
+func fallbackOrder(prefer placement) []placement {
+	switch prefer {
+	case placeBelow:
+		return []placement{placeBelow, placeAbove, placeRight, placeLeft}
+	case placeAbove:
+		return []placement{placeAbove, placeBelow, placeRight, placeLeft}
+	default:
+		return []placement{placeRight, placeBelow, placeAbove, placeLeft}
+	}
+}
+
+// withTooltip composites a description box attached to the text it describes,
+// trying each placement in turn until one fits.
 //
 // Descriptions are drawn as a popover rather than inline underneath the
-// selected row: an inline description changes the panel's height as the
+// selected row: an inline description changes the container's height as the
 // selection moves, so every row below it shifts by a line on each keypress,
 // which makes a list unreadable to scan. Overlapping whatever is beneath is
 // deliberate and expected.
@@ -108,67 +149,89 @@ func (m *Model) withTooltip(frame string, tip tooltip) string {
 	if tip.text == "" {
 		return frame
 	}
-	th := m.style.Theme
-	g := m.style.Glyphs
-
 	lines := strings.Split(frame, "\n")
 	frameWidth := naturalWidth(lines)
 
-	const chrome = 4 // the box's own border and padding
-	const gap = 1    // the pointer
-	const preferred = 30
-	const minimum = 14
-
-	// Wrap at the available width, then size the box to what the text actually
-	// came out as, so a short description does not sit in a wide empty box.
-	render := func(width int) string {
-		wrapped := lipgloss.NewStyle().Width(width).Render(m.style.Text(th.Dim, tip.text))
-		hug := naturalWidth(strings.Split(wrapped, "\n"))
-		return lipgloss.NewStyle().
-			Border(m.tooltipBorder()).
-			BorderForeground(th.Accent2.TermColor(m.style.Mode)).
-			Padding(0, 1).
-			Width(hug + 2).
-			Render(wrapped)
-	}
-
-	// Beside the text is the natural place for a description, so try that
-	// first. Falling back to the left would cover the label of the very field
-	// being described, so when there is no room to the right the box drops
-	// underneath instead — the same thing a tooltip does on a page.
-	if width := min(frameWidth-tip.col-gap-chrome, preferred); width >= minimum {
-		box := render(width)
-		top := min(max(tip.row-lipgloss.Height(box)/2, 0), max(len(lines)-lipgloss.Height(box), 0))
-		frame = overlayAt(frame, box, top, tip.col+gap)
-		return overlayAt(frame, m.style.Text(th.Accent2, g.PointLeft), tip.row, tip.col)
-	}
-
-	width := min(frameWidth-chrome-2, preferred)
-	if width < minimum {
-		return frame
-	}
-	box := render(width)
-	boxWidth, boxHeight := lipgloss.Width(box), lipgloss.Height(box)
-
-	// Prefer below; go above when the bottom of the frame is too close.
-	top := tip.row + 1
-	pointer := g.PointUp
-	pointerRow := top
-	if top+boxHeight > len(lines) {
-		top = tip.row - boxHeight
-		pointerRow = top + boxHeight - 1
-	}
-	if top < 0 {
-		return frame
-	}
-	// Keep the box in frame, then notch its border under the text it belongs to.
-	left := min(max(tip.col-2, 0), max(frameWidth-boxWidth, 0))
-
-	frame = overlayAt(frame, box, top, left)
-	if tip.col > left && tip.col < left+boxWidth-1 {
-		frame = overlayAt(frame, m.style.Text(th.Accent2, pointer), pointerRow, tip.col)
+	for _, p := range fallbackOrder(tip.prefer) {
+		if out, ok := m.placeTooltip(frame, lines, frameWidth, tip, p); ok {
+			return out
+		}
 	}
 	return frame
+}
+
+// renderTooltip builds the box, wrapping at width and then shrinking to hug
+// the text so a short description does not sit in a wide empty box.
+func (m *Model) renderTooltip(text string, width int) string {
+	th := m.style.Theme
+	wrapped := lipgloss.NewStyle().Width(width).Render(m.style.Text(th.Dim, text))
+	hug := naturalWidth(strings.Split(wrapped, "\n"))
+	return lipgloss.NewStyle().
+		Border(m.tooltipBorder()).
+		BorderForeground(th.Accent2.TermColor(m.style.Mode)).
+		Padding(0, 1).
+		Width(hug + 2).
+		Render(wrapped)
+}
+
+// placeTooltip attempts one placement, reporting whether it fitted.
+func (m *Model) placeTooltip(frame string, lines []string, frameWidth int, tip tooltip, p placement) (string, bool) {
+	g := m.style.Glyphs
+	height := len(lines)
+
+	var budget int
+	switch p {
+	case placeRight:
+		budget = frameWidth - tip.col - tipGap - tipChrome
+	case placeLeft:
+		budget = tip.col - tipGap - tipChrome
+	default:
+		budget = frameWidth - tipChrome - 2
+	}
+	width := min(budget, tipPreferred)
+	if width < tipMinimum {
+		return "", false
+	}
+
+	box := m.renderTooltip(tip.text, width)
+	boxWidth, boxHeight := lipgloss.Width(box), lipgloss.Height(box)
+	point := func(glyph string) string { return m.style.Text(m.style.Theme.Accent2, glyph) }
+
+	switch p {
+	case placeRight, placeLeft:
+		if boxHeight > height {
+			return "", false
+		}
+		// Centre the box on the row it belongs to, then pull it back inside
+		// the frame if that would push it off the top or bottom.
+		top := min(max(tip.row-boxHeight/2, 0), height-boxHeight)
+		col, pointerCol, glyph := tip.col+tipGap, tip.col, g.PointLeft
+		if p == placeLeft {
+			col, pointerCol, glyph = tip.col-tipGap-boxWidth, tip.col-tipGap, g.PointRight
+		}
+		if col < 0 || col+boxWidth > frameWidth {
+			return "", false
+		}
+		out := overlayAt(frame, box, top, col)
+		return overlayAt(out, point(glyph), tip.row, pointerCol), true
+
+	default: // placeBelow, placeAbove
+		top, pointerRow, glyph := tip.row+1, tip.row+1, g.PointUp
+		if p == placeAbove {
+			top = tip.row - boxHeight
+			pointerRow, glyph = tip.row-1, g.PointDown
+		}
+		if top < 0 || top+boxHeight > height {
+			return "", false
+		}
+		// Keep the box in frame, then notch its border under the text.
+		left := min(max(tip.col-2, 0), max(frameWidth-boxWidth, 0))
+		out := overlayAt(frame, box, top, left)
+		if tip.col > left && tip.col < left+boxWidth-1 {
+			out = overlayAt(out, point(glyph), pointerRow, tip.col)
+		}
+		return out, true
+	}
 }
 
 // tooltipBorder returns the border style for a popover.

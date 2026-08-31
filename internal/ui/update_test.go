@@ -958,3 +958,114 @@ func TestResizeOnlyEverGrowsTheWindow(t *testing.T) {
 		t.Fatalf("requested %v; shrinking somebody's terminal is not ours to do", m.pendingResize)
 	}
 }
+
+func TestDiscardingSettingsKeepsTheDisplayName(t *testing.T) {
+	// Entering settings from anywhere must take the snapshot, or escape
+	// "restores" an empty name over the real one.
+	for _, from := range []screen{screenMenu, screenBrowser, screenGame} {
+		m := newTestModel(t)
+		m.session = &recordingSession{}
+		m.screen = from
+		m.app.Ident.DisplayName = "ada"
+		m.initSettings()
+
+		if from == screenMenu {
+			// Go through the menu item rather than jumping to the screen.
+			for i, item := range m.menu.items {
+				if item.title == "settings" {
+					m.menu.cursor = i
+				}
+			}
+			m = send(t, m, press("enter"))
+		} else {
+			m = send(t, m, press(","))
+		}
+		if m.screen != screenSettings {
+			t.Fatalf("from %v: settings did not open", from)
+		}
+
+		m = send(t, m, press("esc"))
+		if m.app.Ident.DisplayName != "ada" {
+			t.Errorf("from %v: display name = %q after discarding, want %q",
+				from, m.app.Ident.DisplayName, "ada")
+		}
+		if m.screen != from {
+			t.Errorf("from %v: returned to %v", from, m.screen)
+		}
+	}
+}
+
+func TestDiscardingRestoresAnEditedDisplayName(t *testing.T) {
+	m := newTestModel(t)
+	m.screen = screenMenu
+	m.app.Ident.DisplayName = "ada"
+	m.initSettings()
+	m.openSettings()
+
+	m.settings.cursor = 0 // the name field
+	m.syncSettingsFocus()
+	for _, r := range "grace" {
+		m = send(t, m, press(string(r)))
+	}
+	if got := m.settings.name.Value(); got == "ada" {
+		t.Fatal("the name was not edited, so discarding proves nothing")
+	}
+
+	m = send(t, m, press("esc"))
+	if m.app.Ident.DisplayName != "ada" {
+		t.Errorf("display name = %q after discarding, want %q", m.app.Ident.DisplayName, "ada")
+	}
+	if got := m.settings.name.Value(); got != "ada" {
+		t.Errorf("the field still reads %q after discarding", got)
+	}
+}
+
+func TestSavingKeepsAnEditedDisplayName(t *testing.T) {
+	m := newTestModel(t)
+	m.screen = screenMenu
+	m.app.Ident.DisplayName = "ada"
+	m.initSettings()
+	m.openSettings()
+
+	m.settings.cursor = 0
+	m.syncSettingsFocus()
+	m.settings.name.SetValue("")
+	for _, r := range "grace" {
+		m = send(t, m, press(string(r)))
+	}
+	m = send(t, m, press("enter"))
+
+	if m.app.Ident.DisplayName != "grace" {
+		t.Fatalf("display name = %q after saving, want %q", m.app.Ident.DisplayName, "grace")
+	}
+	reloaded, err := store.LoadOrCreateIdentity(m.app.StateDir, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.DisplayName != "grace" {
+		t.Errorf("stored name = %q, want %q", reloaded.DisplayName, "grace")
+	}
+}
+
+func TestTheNameFieldTracksItsContents(t *testing.T) {
+	// The popover anchors just past the field, so a field padded out to a
+	// fixed width would leave a gap between the text and the description.
+	m := newTestModel(t)
+	m.screen = screenSettings
+	m.openSettings()
+	m.settings.cursor = 0
+	m.syncSettingsFocus()
+	m.settings.name.SetValue("")
+	fitInput(&m.settings.name)
+
+	widths := []int{}
+	for _, r := range "abcdefgh" {
+		m = send(t, m, press(string(r)))
+		widths = append(widths, lipgloss.Width(m.settings.name.View()))
+	}
+	for i := 1; i < len(widths); i++ {
+		if widths[i] <= widths[i-1] {
+			t.Fatalf("the field did not grow with its contents: %v", widths)
+		}
+	}
+}

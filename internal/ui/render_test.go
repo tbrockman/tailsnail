@@ -1563,3 +1563,171 @@ func TestTheActivityDialogKeepsItsSizeWhileScrolling(t *testing.T) {
 		}
 	}
 }
+
+func TestDescriptionsAreShownAsPopoversEverywhere(t *testing.T) {
+	// Every list that describes its selection does so with a popover, so the
+	// rows themselves never move as the selection travels.
+	type listScreen struct {
+		name   string
+		setup  func(*Model)
+		count  func(*Model) int
+		set    func(*Model, int)
+		labels []string
+	}
+	screens := []listScreen{
+		{
+			name:   "menu",
+			setup:  func(m *Model) { m.screen = screenMenu },
+			count:  func(m *Model) int { return len(m.menu.items) },
+			set:    func(m *Model, i int) { m.menu.cursor = i },
+			labels: []string{"host a game", "find a game", "history", "settings", "quit"},
+		},
+		{
+			name: "history matches",
+			setup: func(m *Model) {
+				m.screen = screenHistory
+				m.history.tab = tabMatches
+			},
+			count: func(m *Model) int { return min(len(m.history.records), 4) },
+			set:   func(m *Model, i int) { m.history.cursor = i },
+		},
+		{
+			name: "history leaderboard",
+			setup: func(m *Model) {
+				m.screen = screenHistory
+				m.history.tab = tabLeaderboard
+			},
+			count: func(m *Model) int { return min(len(m.history.board), 3) },
+			set:   func(m *Model, i int) { m.history.cursor = i },
+		},
+	}
+
+	for _, sc := range screens {
+		t.Run(sc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			m.width, m.height = 110, 30
+			m.node = runningNode()
+			for range 4 {
+				if _, err := m.app.Store.Put(signedRecord(t, m, 3, 3)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m.history.reload(m.app.Store)
+			sc.setup(m)
+
+			n := sc.count(m)
+			if n < 2 {
+				t.Fatalf("only %d entries; the test proves nothing", n)
+			}
+			// The rows the list itself draws must not move as the selection
+			// travels. Rows the popover happens to cover are excluded: that
+			// occlusion is the point.
+			var baseline []string
+			for i := range n {
+				sc.set(m, i)
+				view := stripANSI(m.View())
+				checkFrame(t, m, sc.name, m.View())
+				rows := strings.Split(view, "\n")
+				if baseline == nil {
+					baseline = rows
+					continue
+				}
+				if len(rows) != len(baseline) {
+					t.Fatalf("selection %d changed the frame height", i)
+				}
+			}
+			for _, label := range sc.labels {
+				m2 := newTestModel(t)
+				m2.width, m2.height = 110, 30
+				sc.setup(m2)
+				if !strings.Contains(stripANSI(m2.View()), label) {
+					t.Errorf("%q is missing from the list", label)
+				}
+			}
+		})
+	}
+}
+
+func TestMenuDescribesTheSelectionInAPopover(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 110, 30
+	m.node = runningNode()
+	m.screen = screenMenu
+
+	for i, item := range m.menu.items {
+		m.menu.cursor = i
+		view := m.View()
+		checkFrame(t, m, "menu popover", view)
+		// The description wraps inside the box, and the box sits beside rows
+		// that carry their own text, so the words cannot be matched as one
+		// contiguous run. Their presence is what matters.
+		plain := stripANSI(view)
+		for _, word := range strings.Fields(item.desc) {
+			if !strings.Contains(plain, word) {
+				t.Errorf("item %q is missing %q from its description:\n%s", item.title, word, plain)
+				break
+			}
+		}
+		// The description must not be inline: it sits inside a bordered box.
+		if !strings.Contains(view, m.style.Glyphs.PointLeft) &&
+			!strings.Contains(view, m.style.Glyphs.PointUp) &&
+			!strings.Contains(view, m.style.Glyphs.PointDown) {
+			t.Errorf("item %q's description has no pointer, so it is not a popover", item.title)
+		}
+	}
+}
+
+func TestHistoryMatchDetailHangsUnderTheRow(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 110, 30
+	m.node = runningNode()
+	for range 3 {
+		if _, err := m.app.Store.Put(signedRecord(t, m, 3, 3)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.history.reload(m.app.Store)
+	m.screen = screenHistory
+	m.history.tab = tabMatches
+	m.history.cursor = 0
+
+	view := m.View()
+	checkFrame(t, m, "history match detail", view)
+	plain := stripANSI(view)
+	if !strings.Contains(plain, "40×20 classic") {
+		t.Errorf("the match detail is not shown:\n%s", plain)
+	}
+	// A full-width table leaves no room beside it, so the box hangs below.
+	if !strings.Contains(view, m.style.Glyphs.PointUp) {
+		t.Error("the detail is not notched under the row it describes")
+	}
+}
+
+func TestBrowserPeerDetailIsAPopover(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 110, 26
+	m.node = runningNode()
+	m.screen = screenBrowser
+	cfg := game.DefaultConfig()
+	m.browser.snapshot = discovery.Snapshot{At: time.Now(), Candidates: 3, Peers: []discovery.Peer{
+		{NodeID: "n1", DNSName: "grace-laptop.tail1234.ts.net", Short: "grace-laptop",
+			DisplayName: "grace", Login: "grace@example.com", AppVersion: "0.1.0",
+			RTT: 12 * time.Millisecond, LastSeen: time.Now(),
+			Advert: &proto.Advert{LobbyID: "l1", Name: "friday night", Config: cfg,
+				Seats: 4, Taken: 2, Phase: proto.PhaseOpen}},
+		{NodeID: "n2", DNSName: "hedy.tail1234.ts.net", Short: "hedy", DisplayName: "hedy", LastSeen: time.Now()},
+	}}
+
+	for cursor := range 2 {
+		m.browser.cursor = cursor
+		checkFrame(t, m, "browser popover", m.View())
+	}
+	m.browser.cursor = 0
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "grace@example.com") {
+		t.Errorf("the peer detail is not shown:\n%s", plain)
+	}
+	if !strings.Contains(plain, "grace-laptop.tail1234.ts.net") {
+		t.Error("the peer's full DNS name is missing from the detail")
+	}
+}
