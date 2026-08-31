@@ -55,11 +55,21 @@ const (
 	screenSettings
 )
 
+// NodeController is the slice of the embedded Tailscale node that the
+// interface drives. It is an interface rather than the concrete type so the
+// screens and their state machine can be tested without a tailnet.
+type NodeController interface {
+	// Updates is the stream of onboarding and connection state changes.
+	Updates() <-chan tsnode.Status
+	// Relogin restarts the interactive device login.
+	Relogin(ctx context.Context) error
+}
+
 // App bundles the services the UI drives. It is assembled by cmd/tsnail and
 // handed to the model whole.
 type App struct {
 	Ctx      context.Context
-	Node     *tsnode.Node
+	Node     NodeController
 	Server   *netplay.Server
 	Prober   *discovery.Prober
 	Store    *store.Store
@@ -245,8 +255,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.sessionGen {
 			return m, nil // an event from a session the user already left
 		}
+		// Capture the stream before handling the event: a terminal event
+		// detaches the session, and the follow-up read has to come from the
+		// stream this event arrived on, not from whatever is attached after.
+		stream := m.session
 		cmd := m.handleSessionEvent(msg.ev)
-		return m, tea.Batch(cmd, waitSession(msg.gen, m.session.Events()))
+		if stream == nil {
+			return m, cmd
+		}
+		return m, tea.Batch(cmd, waitSession(msg.gen, stream.Events()))
 
 	case sessionGoneMsg:
 		if msg.gen != m.sessionGen {
@@ -587,6 +604,10 @@ func (m *Model) phase(cycle time.Duration) float64 {
 	elapsed := float64(m.frame) * float64(frameInterval)
 	return mod1(elapsed / float64(cycle))
 }
+
+// compile-time assertion that the embedded node satisfies the narrow
+// interface the UI depends on.
+var _ NodeController = (*tsnode.Node)(nil)
 
 // mod1 returns the fractional part of v, always in [0,1).
 func mod1(v float64) float64 {

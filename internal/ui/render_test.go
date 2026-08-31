@@ -35,11 +35,16 @@ func newTestModel(t *testing.T) *Model {
 	if err != nil {
 		t.Fatal(err)
 	}
+	log := logring.New(64)
 	app := &App{
-		Ctx:       context.Background(),
-		Store:     st,
-		Ident:     ident,
-		Log:       logring.New(64),
+		Ctx:   context.Background(),
+		Store: st,
+		Ident: ident,
+		Log:   log,
+		// A prober with no dialer is enough for the update path: the UI only
+		// ever asks it to schedule a sweep, which never touches the network.
+		Node:      newFakeNode(),
+		Prober:    discovery.New(discovery.Options{Log: log, PubKey: ident.PubKey()}),
 		StateDir:  dir,
 		Settings:  store.DefaultSettings(),
 		ColorFlag: theme.ModeTrueColor,
@@ -931,6 +936,22 @@ func TestATerminalThatReportsNoSizeStillRenders(t *testing.T) {
 	if m.width != 120 || m.height != 40 {
 		t.Fatalf("viewport = %dx%d, want 120x40", m.width, m.height)
 	}
+}
+
+// fakeNode stands in for the embedded Tailscale node. The interface is narrow
+// enough that a channel and a counter cover it.
+type fakeNode struct {
+	updates  chan tsnode.Status
+	relogins int
+}
+
+func newFakeNode() *fakeNode { return &fakeNode{updates: make(chan tsnode.Status, 8)} }
+
+func (f *fakeNode) Updates() <-chan tsnode.Status { return f.updates }
+
+func (f *fakeNode) Relogin(context.Context) error {
+	f.relogins++
+	return nil
 }
 
 // fakeSession stands in for a lobby session in render tests.
