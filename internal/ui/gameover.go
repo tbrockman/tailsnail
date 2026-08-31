@@ -76,7 +76,7 @@ func (m *Model) viewGameOver() string {
 	sort.Slice(snakes, func(i, j int) bool { return snakes[i].Placement < snakes[j].Placement })
 
 	rows := []string{
-		m.style.FaintText(pad("   place", 9) + pad("player", 20) + pad("length", 8) +
+		m.style.FaintText(pad("    place", 10) + pad("player", 20) + pad("length", 8) +
 			pad("food", 6) + pad("kills", 6) + "survived"),
 	}
 	for _, sn := range snakes {
@@ -88,13 +88,16 @@ func (m *Model) viewGameOver() string {
 		}
 		mine := m.session != nil && sn.ID == m.game.seat
 
-		place := fmt.Sprintf("%d", sn.Placement)
+		// The winner's marker lives in its own column so the place numbers stay
+		// in a straight line down the table.
+		marker := "  "
 		placeColor := th.Dim
 		if sn.Placement == 1 {
 			// The winner's row pulses gently rather than sitting still.
 			placeColor = th.Accent.Scale(0.85 + 0.3*m.pulse(1400*time.Millisecond))
-			place = g.Check + " 1"
+			marker = g.Check + " "
 		}
+		place := fmt.Sprintf("%d", sn.Placement)
 
 		nameText := name
 		if mine {
@@ -106,7 +109,8 @@ func (m *Model) viewGameOver() string {
 		}
 
 		rows = append(rows, "  "+
-			m.style.Text(placeColor, pad(place, 7))+
+			m.style.Text(placeColor, marker)+
+			m.style.Text(placeColor, pad(place, 6))+
 			m.style.Text(th.Player(slot), g.Head(slot)+" ")+
 			m.style.Text(th.Player(slot), pad(truncate(nameText, 18), 19))+
 			m.style.DimText(pad(fmt.Sprintf("%d", sn.MaxLength), 8))+
@@ -115,7 +119,7 @@ func (m *Model) viewGameOver() string {
 			m.style.DimText(survived))
 	}
 
-	rows = append(rows, "", m.attestationLine())
+	rows = append(rows, "", m.savedLine())
 
 	title := m.style.Bold("match over")
 	if winner, ok := m.winnerName(snakes); ok {
@@ -149,19 +153,18 @@ func (m *Model) winnerName(snakes []game.Snake) (string, bool) {
 	return "", false
 }
 
-// attestationLine reports whether the result has been signed and stored yet.
-func (m *Model) attestationLine() string {
+// savedLine confirms the result reached the history.
+//
+// It deliberately says nothing about signatures. How a record is attested is
+// real and it matters, but it is machinery: a player who just finished a match
+// wants to know it counted, not how many keys signed it. The history screen is
+// where attestation status belongs, for anyone who goes looking.
+func (m *Model) savedLine() string {
 	th := m.style.Theme
 	g := m.style.Glyphs
 	if m.over.record == nil {
-		spinner := m.style.Accent(g.Spin(m.phase(700 * time.Millisecond)))
-		return spinner + " " + m.style.DimText("collecting signatures"+g.Ellipsis)
+		return m.style.Accent(g.Spin(m.phase(700*time.Millisecond))) + " " +
+			m.style.DimText("saving result"+g.Ellipsis)
 	}
-	rec := m.over.record
-	if rec.FullyAttested() {
-		return m.style.Text(th.Ok, g.Check+" ") +
-			m.style.DimText(fmt.Sprintf("signed by all %d players and recorded", len(rec.Signatures)))
-	}
-	return m.style.Text(th.Warn, g.Bullet+" ") +
-		m.style.DimText(fmt.Sprintf("recorded %s — someone left before signing", rec.AttestationSummary()))
+	return m.style.Text(th.Ok, g.Check+" ") + m.style.DimText("added to your history")
 }

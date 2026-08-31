@@ -10,6 +10,11 @@ package theme
 type Glyphs struct {
 	ASCII bool
 
+	// Logo is the application icon. It is empty unless the terminal is one
+	// known to render emoji at the width it reports, because a mis-measured
+	// cell shears every column after it.
+	Logo string
+
 	// Heads holds one distinctive glyph per palette slot. Shape carries the
 	// player's identity on its own, so the game stays playable with NO_COLOR
 	// set or on a 16-colour terminal where two players may land on similar hues.
@@ -37,6 +42,8 @@ type Glyphs struct {
 	Cross    string
 	Arrow    string
 	Ellipsis string
+	// PointLeft and PointRight tie a popover to the row it describes.
+	PointLeft, PointRight string
 	// Spinner frames for connecting and scanning states.
 	Spinner []string
 	// Meter fills a progress or countdown bar.
@@ -58,6 +65,7 @@ var Unicode = Glyphs{
 	Horizontal: "─", Vertical: "│",
 
 	Bullet: "•", Check: "✓", Cross: "✗", Arrow: "›", Ellipsis: "…",
+	PointLeft: "◂", PointRight: "▸",
 	Spinner:   []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
 	MeterFull: "█", MeterEmpty: "░",
 }
@@ -78,16 +86,25 @@ var ASCIIGlyphs = Glyphs{
 	Horizontal: "-", Vertical: "|",
 
 	Bullet: "*", Check: "x", Cross: "-", Arrow: ">", Ellipsis: "...",
+	PointLeft: "<", PointRight: ">",
 	Spinner:   []string{"|", "/", "-", "\\"},
 	MeterFull: "#", MeterEmpty: ".",
 }
 
-// Set returns the glyph set for the requested mode.
-func Set(ascii bool) Glyphs {
+// SnailIcon is the application's emoji icon, used where emoji are supported.
+const SnailIcon = "🐌"
+
+// Set returns the glyph set for the requested modes. ASCII mode always wins
+// over emoji: someone asking for plain ASCII does not want a snail either.
+func Set(ascii, emoji bool) Glyphs {
 	if ascii {
 		return ASCIIGlyphs
 	}
-	return Unicode
+	g := Unicode
+	if emoji {
+		g.Logo = SnailIcon
+	}
+	return g
 }
 
 // Head returns the head glyph for a palette slot.

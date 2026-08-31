@@ -9,6 +9,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -38,6 +39,15 @@ const toastDuration = 4 * time.Second
 const (
 	fallbackWidth  = 80
 	fallbackHeight = 24
+)
+
+// modalKind identifies a dialog drawn over whatever screen is beneath it.
+type modalKind int
+
+const (
+	modalNone modalKind = iota
+	// modalActivity is the lobby's event feed, paged.
+	modalActivity
 )
 
 // screen identifies the view currently in front of the user.
@@ -77,10 +87,11 @@ type App struct {
 	Log      *logring.Ring
 	StateDir string
 	Settings store.Settings
-	// ASCII and Color come from the command line and override the stored
-	// settings for this run only.
+	// ASCII, Color and Emoji come from the command line and override the
+	// stored settings for this run only.
 	ASCIIFlag bool
 	ColorFlag theme.Mode
+	EmojiFlag theme.EmojiMode
 }
 
 // Model is the root Bubble Tea model.
@@ -96,6 +107,11 @@ type Model struct {
 	width, height int
 	frame         int
 	now           time.Time
+	// startedAt anchors every animation to wall-clock time. Driving them from
+	// a frame counter tied them to how often the loop happened to run, which
+	// made the shimmer speed up and slow down with the match's tick rate;
+	// these are decoration and should look the same at 5 ticks or 60.
+	startedAt time.Time
 
 	// node holds the most recent embedded-node status.
 	node tsnode.Status
@@ -115,6 +131,18 @@ type Model struct {
 	showLog bool
 	logTop  int
 
+	// modal is the dialog drawn over the current screen, if any.
+	modal    modalKind
+	modalTop int
+
+	// settingsFrom is the screen to return to when settings closes, since it
+	// can be opened from anywhere.
+	settingsFrom screen
+
+	// pendingResize is an XTWINOPS request waiting to go out with the next
+	// frame. Terminals that do not implement it ignore the sequence.
+	pendingResize [2]int
+
 	onboard  onboardState
 	menu     menuState
 	browser  browserState
@@ -130,17 +158,20 @@ type Model struct {
 
 // New builds the root model.
 func New(app *App) *Model {
-	mode := theme.Resolve(app.ColorFlag, theme.EnvFromOS())
+	env := theme.EnvFromOS()
+	mode := theme.Resolve(app.ColorFlag, env)
 	ascii := app.ASCIIFlag || app.Settings.ASCII
+	emoji := app.Settings.Emoji && theme.ResolveEmoji(app.EmojiFlag, env)
 	m := &Model{
-		app:      app,
-		style:    theme.NewStyle(theme.ByName(app.Settings.Theme), mode, ascii),
-		keys:     defaultKeys(),
-		screen:   screenOnboarding,
-		returnTo: screenMenu,
-		now:      time.Now(),
-		width:    fallbackWidth,
-		height:   fallbackHeight,
+		app:       app,
+		style:     theme.NewStyle(theme.ByName(app.Settings.Theme), mode, ascii, emoji),
+		keys:      defaultKeys(),
+		screen:    screenOnboarding,
+		returnTo:  screenMenu,
+		now:       time.Now(),
+		startedAt: time.Now(),
+		width:     fallbackWidth,
+		height:    fallbackHeight,
 	}
 	m.initMenu()
 	m.initForm()
@@ -155,8 +186,16 @@ func (m *Model) Init() tea.Cmd {
 		frameTick(),
 		waitNodeStatus(m.app.Node.Updates()),
 		waitDiscovery(m.app.Prober.Snapshots()),
-		tea.SetWindowTitle("tailsnail"),
+		tea.SetWindowTitle(m.windowTitle()),
 	)
+}
+
+// windowTitle names the terminal window, with the icon where it will render.
+func (m *Model) windowTitle() string {
+	if icon := m.style.Glyphs.Logo; icon != "" {
+		return icon + " tailsnail"
+	}
+	return "tailsnail"
 }
 
 // --- messages -------------------------------------------------------------
@@ -365,6 +404,7 @@ func (m *Model) tickAnimations() {
 
 // handleSessionReady installs a newly created session or reports its failure.
 func (m *Model) handleSessionReady(msg sessionReadyMsg) tea.Cmd {
+	m.browser.joining = ""
 	if msg.err != nil {
 		verb := "join"
 		if msg.hosting {
@@ -407,6 +447,10 @@ func (m *Model) handleSessionEvent(ev netplay.Event) tea.Cmd {
 	case netplay.GameStarted:
 		m.game.start(e, m.now)
 		m.screen = screenGame
+		// Ask the terminal to make room for the arena, if it is the sort that
+		// listens. Best-effort: the resize overlay still covers the rest.
+		needW, needH := m.requiredSize()
+		m.requestResize(needW, needH)
 	case netplay.Tick:
 		m.game.apply(e.State, m.now)
 	case netplay.MatchOver:
@@ -470,19 +514,23 @@ func (m *Model) setToast(kind toastKind, format string, args ...any) tea.Cmd {
 // keyMap is the full set of bindings. Individual screens advertise the subset
 // that applies to them in the help bar.
 type keyMap struct {
-	Up      key.Binding
-	Down    key.Binding
-	Left    key.Binding
-	Right   key.Binding
-	Enter   key.Binding
-	Back    key.Binding
-	Quit    key.Binding
-	Ready   key.Binding
-	Refresh key.Binding
-	Kick    key.Binding
-	Log     key.Binding
-	Copy    key.Binding
-	Retry   key.Binding
+	Up       key.Binding
+	Down     key.Binding
+	Left     key.Binding
+	Right    key.Binding
+	Enter    key.Binding
+	Back     key.Binding
+	Quit     key.Binding
+	Ready    key.Binding
+	Refresh  key.Binding
+	Kick     key.Binding
+	Log      key.Binding
+	Copy     key.Binding
+	Retry    key.Binding
+	Settings key.Binding
+	Activity key.Binding
+	Edit     key.Binding
+	Save     key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -500,15 +548,24 @@ func defaultKeys() keyMap {
 		Log:     key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "logs")),
 		Copy:    key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open browser")),
 		Retry:   key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "retry")),
+		// Comma is the conventional preferences key and is not bound to
+		// movement, so it is safe to reach from inside a match.
+		Settings: key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
+		Activity: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "activity")),
+		Edit:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit settings")),
+		Save:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
 	}
 }
 
 // handleKey routes a keypress to the active screen, after the few global
 // bindings have had a look.
 func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
-	// The log overlay swallows input while it is up.
+	// Overlays swallow input while they are up.
 	if m.showLog {
 		return m.updateLogOverlay(msg)
+	}
+	if m.modal != modalNone {
+		return m.updateModal(msg)
 	}
 	if key.Matches(msg, m.keys.Log) {
 		m.showLog = true
@@ -519,6 +576,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// can be typed into text fields.
 	if msg.String() == "ctrl+c" {
 		return m.quit()
+	}
+	// Settings are reachable from every screen, except while a text field has
+	// the keyboard — a comma typed into a name is a comma.
+	if key.Matches(msg, m.keys.Settings) && !m.editingText() {
+		m.openSettings()
+		return nil
 	}
 
 	switch m.screen {
@@ -542,6 +605,67 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.updateSettings(msg)
 	}
 	return nil
+}
+
+// editingText reports whether a text field currently has the keyboard, in
+// which case global single-key bindings must not steal input from it.
+func (m *Model) editingText() bool {
+	switch m.screen {
+	case screenHostForm:
+		return m.form.fields[m.form.cursor].text
+	case screenSettings:
+		return m.settings.fields[m.settings.cursor].text
+	}
+	return false
+}
+
+// openSettings enters the settings screen, remembering where to go back to.
+func (m *Model) openSettings() {
+	if m.screen == screenSettings {
+		return
+	}
+	m.settingsFrom = m.screen
+	m.settings.begin(m)
+	m.screen = screenSettings
+}
+
+// openModal shows a dialog over the current screen.
+func (m *Model) openModal(kind modalKind) {
+	m.modal = kind
+	m.modalTop = 0
+}
+
+// updateModal handles input while a dialog is up.
+func (m *Model) updateModal(msg tea.KeyMsg) tea.Cmd {
+	switch {
+	case key.Matches(msg, m.keys.Back), msg.String() == "q", key.Matches(msg, m.keys.Activity):
+		m.modal = modalNone
+	case key.Matches(msg, m.keys.Up):
+		m.modalTop++
+	case key.Matches(msg, m.keys.Down):
+		m.modalTop = max(m.modalTop-1, 0)
+	case msg.String() == "ctrl+c":
+		return m.quit()
+	}
+	return nil
+}
+
+// requestResize asks the terminal emulator to become at least the given size.
+//
+// This is XTWINOPS, which many emulators implement and the rest ignore, so it
+// is a best-effort convenience rather than something the layout relies on. It
+// only ever grows the window: shrinking somebody's terminal for them would be
+// a rude surprise.
+func (m *Model) requestResize(cols, rows int) {
+	if !m.app.Settings.AutoResize {
+		return
+	}
+	cols = max(cols, m.width)
+	rows = max(rows, m.height)
+	if cols == m.width && rows == m.height {
+		return
+	}
+	m.pendingResize = [2]int{cols, rows}
 }
 
 // quit tears the session down and ends the program.
@@ -568,9 +692,14 @@ func (m *Model) View() string {
 		return body
 	}
 	if m.showLog {
-		return m.viewLogOverlay()
+		return m.prefixResize(m.viewLogOverlay())
 	}
 
+	return m.prefixResize(m.withModal(m.screenView()))
+}
+
+// screenView renders whichever screen is active.
+func (m *Model) screenView() string {
 	switch m.screen {
 	case screenOnboarding:
 		return m.viewOnboarding()
@@ -594,15 +723,41 @@ func (m *Model) View() string {
 	return ""
 }
 
+// withModal draws the active dialog over a rendered screen.
+func (m *Model) withModal(frame string) string {
+	switch m.modal {
+	case modalActivity:
+		return m.viewActivityModal(frame)
+	}
+	return frame
+}
+
+// prefixResize emits a pending terminal-resize request alongside the frame.
+//
+// Bubble Tea has no channel for arbitrary control sequences, so the request
+// rides out with the frame it belongs to. It is cleared here because this is
+// the moment it actually reaches the terminal.
+func (m *Model) prefixResize(frame string) string {
+	if m.pendingResize == [2]int{} {
+		return frame
+	}
+	req := fmt.Sprintf("\x1b[8;%d;%dt", m.pendingResize[1], m.pendingResize[0])
+	m.pendingResize = [2]int{}
+	return req + frame
+}
+
 // phase returns the shared animation phase in [0,1) for a cycle of the given
 // duration. Everything that pulses reads from here, so the whole interface
 // beats together.
+//
+// It is derived from elapsed wall-clock time rather than a frame counter, so
+// an animation runs at the same speed regardless of how often the loop is
+// woken — by a fast match, a slow one, or nothing at all.
 func (m *Model) phase(cycle time.Duration) float64 {
 	if cycle <= 0 {
 		return 0
 	}
-	elapsed := float64(m.frame) * float64(frameInterval)
-	return mod1(elapsed / float64(cycle))
+	return mod1(float64(m.now.Sub(m.startedAt)) / float64(cycle))
 }
 
 // compile-time assertion that the embedded node satisfies the narrow

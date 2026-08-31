@@ -79,6 +79,9 @@ type Session interface {
 	Input(dir game.Direction)
 	// Kick removes a seat. It is ignored on a client.
 	Kick(seat game.PlayerID)
+	// Reconfigure changes an open lobby's settings. Only the host can do this;
+	// it is ignored on a client.
+	Reconfigure(name string, cfg game.Config)
 	// Close leaves the lobby, telling the peer why.
 	Close(reason string)
 }

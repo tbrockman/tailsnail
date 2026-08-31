@@ -215,10 +215,10 @@ func (m *Model) viewGame() string {
 	hud := m.renderHUD(st)
 
 	body := lipgloss.JoinVertical(lipgloss.Center, hud, arena)
-	subtitle := fmt.Sprintf("tick %d  %s  %s", st.Tick, m.style.Glyphs.Bullet,
-		duration(m.now.Sub(m.game.started)))
+	// The tick number means nothing to a player; elapsed time does.
+	subtitle := duration(m.now.Sub(m.game.started))
 	return m.chrome(m.room.state.Name, subtitle, m.center(body, m.bodyHeight()), []hint{
-		{"↑↓←→ / wasd", "steer"}, {"esc", "leave"}, {"ctrl+l", "logs"},
+		{"↑↓←→ / wasd", "steer"}, {"esc", "leave"}, {",", "settings"},
 	})
 }
 

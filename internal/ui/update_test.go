@@ -9,6 +9,7 @@ import (
 	"github.com/theolol/tailsnail/internal/game"
 	"github.com/theolol/tailsnail/internal/netplay"
 	"github.com/theolol/tailsnail/internal/proto"
+	"github.com/theolol/tailsnail/internal/store"
 	"github.com/theolol/tailsnail/internal/tsnode"
 )
 
@@ -62,6 +63,8 @@ type recordingSession struct {
 	ready       []bool
 	inputs      []game.Direction
 	kicked      []game.PlayerID
+	reconfigs   []game.Config
+	names       []string
 	closed      bool
 	closeReason string
 	events      chan netplay.Event
@@ -71,6 +74,10 @@ func (r *recordingSession) SetReady(v bool)        { r.ready = append(r.ready, v
 func (r *recordingSession) Input(d game.Direction) { r.inputs = append(r.inputs, d) }
 func (r *recordingSession) Kick(s game.PlayerID)   { r.kicked = append(r.kicked, s) }
 func (r *recordingSession) Close(reason string)    { r.closed, r.closeReason = true, reason }
+func (r *recordingSession) Reconfigure(name string, cfg game.Config) {
+	r.names = append(r.names, name)
+	r.reconfigs = append(r.reconfigs, cfg)
+}
 func (r *recordingSession) Events() <-chan netplay.Event {
 	if r.events == nil {
 		r.events = make(chan netplay.Event, 8)
@@ -496,19 +503,114 @@ func TestSettingsThemeAndGlyphChangesApplyImmediately(t *testing.T) {
 	}
 }
 
-func TestSettingsPersistOnLeaving(t *testing.T) {
+func TestSettingsSaveOnEnter(t *testing.T) {
 	m := newTestModel(t)
-	m.screen = screenSettings
-	m.returnTo = screenMenu
-	m.settings.cursor = 1
-	m = send(t, m, press("right")) // change the theme
+	m.screen = screenMenu
+	m.openSettings()
+	if m.screen != screenSettings {
+		t.Fatal("the settings screen did not open")
+	}
+
+	m.settings.cursor = 1 // theme
+	m = send(t, m, press("right"))
+	chosen := m.style.Theme.Name
+
+	m = send(t, m, press("enter"))
+	if m.screen != screenMenu {
+		t.Fatalf("screen = %v after saving, want the screen we came from", m.screen)
+	}
+	if m.app.Settings.Theme != chosen {
+		t.Errorf("saved theme = %q, want %q", m.app.Settings.Theme, chosen)
+	}
+
+	// It must have reached disk, not just the in-memory settings.
+	reloaded, err := store.LoadSettings(m.app.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Theme != chosen {
+		t.Errorf("stored theme = %q, want %q", reloaded.Theme, chosen)
+	}
+}
+
+func TestSettingsDiscardOnEscape(t *testing.T) {
+	m := newTestModel(t)
+	m.screen = screenBrowser
+	before := m.app.Settings.Theme
+	beforeASCII := m.style.Glyphs.ASCII
+	m.openSettings()
+
+	m.settings.cursor = 1 // theme
+	m = send(t, m, press("right"))
+	m.settings.cursor = 2 // glyphs
+	m = send(t, m, press("right"))
+	if m.style.Theme.Name == before && m.style.Glyphs.ASCII == beforeASCII {
+		t.Fatal("the changes did not apply, so discarding proves nothing")
+	}
 
 	m = send(t, m, press("esc"))
-	if m.screen != screenMenu {
-		t.Fatalf("screen = %v after leaving settings", m.screen)
+	if m.screen != screenBrowser {
+		t.Fatalf("screen = %v after discarding, want the screen we came from", m.screen)
 	}
-	if m.app.Settings.Theme != m.style.Theme.Name {
-		t.Error("the settings were not updated before saving")
+	if m.app.Settings.Theme != before {
+		t.Errorf("theme = %q after discarding, want %q", m.app.Settings.Theme, before)
+	}
+	// Live-applied changes must actually be undone, not merely left unsaved.
+	if m.style.Theme.Name != before {
+		t.Errorf("the rendered theme is still %q after discarding", m.style.Theme.Name)
+	}
+	if m.style.Glyphs.ASCII != beforeASCII {
+		t.Error("the glyph set was not restored after discarding")
+	}
+
+	reloaded, err := store.LoadSettings(m.app.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Theme != "" && reloaded.Theme != before {
+		t.Errorf("discarded changes reached disk: %q", reloaded.Theme)
+	}
+}
+
+func TestSettingsOpenFromEveryScreen(t *testing.T) {
+	for _, from := range []screen{
+		screenMenu, screenBrowser, screenHostForm, screenRoom, screenGame,
+		screenGameOver, screenHistory,
+	} {
+		m := newTestModel(t)
+		m.session = &recordingSession{}
+		m.screen = from
+		// Move off any text field: a comma typed into a name is a comma, which
+		// is asserted separately.
+		if from == screenHostForm {
+			m.form.cursor = 1
+		}
+
+		m = send(t, m, press(","))
+		if m.screen != screenSettings {
+			t.Errorf("comma on screen %v did not open settings", from)
+			continue
+		}
+		m = send(t, m, press("esc"))
+		if m.screen != from {
+			t.Errorf("closing settings returned to %v, want %v", m.screen, from)
+		}
+	}
+}
+
+func TestCommaTypesIntoATextFieldRatherThanOpeningSettings(t *testing.T) {
+	m := newTestModel(t)
+	m.screen = screenHostForm
+	m.form.cursor = 0 // the lobby name field
+	m.syncNameFocus()
+	m.form.name.SetValue("")
+
+	m = send(t, m, press(","))
+	if m.screen == screenSettings {
+		t.Fatal("a comma typed into a name field opened the settings screen")
+	}
+	if got := m.form.name.Value(); got != "," {
+		t.Errorf("the name field contains %q, want the typed comma", got)
 	}
 }
 

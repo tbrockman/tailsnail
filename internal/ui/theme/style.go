@@ -16,9 +16,9 @@ type Style struct {
 
 // NewStyle builds a renderer and installs the colour profile globally so that
 // lipgloss's own styling degrades in step with ours.
-func NewStyle(t Theme, m Mode, ascii bool) *Style {
+func NewStyle(t Theme, m Mode, ascii, emoji bool) *Style {
 	m.Apply()
-	return &Style{Theme: t, Mode: m, Glyphs: Set(ascii)}
+	return &Style{Theme: t, Mode: m, Glyphs: Set(ascii, emoji)}
 }
 
 // Colored reports whether any colour will be emitted at all. Screens use it to

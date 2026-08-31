@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theolol/tailsnail/internal/tsnode"
 	"github.com/theolol/tailsnail/internal/ui/theme"
@@ -69,7 +70,10 @@ func (m *Model) header(title, subtitle string) string {
 	th := m.style.Theme
 	g := m.style.Glyphs
 
-	const wordmark = "tailsnail"
+	wordmark := "tailsnail"
+	if icon := m.style.Glyphs.Logo; icon != "" {
+		wordmark = icon + " " + wordmark
+	}
 	left := m.style.Text(th.Accent, wordmark)
 	used := lipgloss.Width(wordmark)
 
@@ -362,6 +366,20 @@ func truncateLeft(s string, width int) string {
 		runes = runes[1:]
 	}
 	return "…" + string(runes)
+}
+
+// truncateStyled shortens a string that already carries colour, counting
+// display cells and leaving escape sequences intact. Slicing a styled string
+// by rune would cut an escape in half and leave the rest of the frame the
+// wrong colour.
+func truncateStyled(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if ansi.StringWidth(s) <= width {
+		return s
+	}
+	return ansi.Truncate(s, width, "…")
 }
 
 // pad right-pads s to width display cells.

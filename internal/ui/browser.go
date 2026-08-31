@@ -19,7 +19,9 @@ import (
 type browserState struct {
 	snapshot discovery.Snapshot
 	cursor   int
-	// joining is the peer a join is in flight for, so the row can show it.
+	// joining is the peer a join is in flight for, so its row can show that
+	// something is happening. It is cleared as soon as the attempt settles,
+	// either way — a stale flag left a lobby reading "joining" forever.
 	joining string
 }
 

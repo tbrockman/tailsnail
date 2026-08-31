@@ -32,6 +32,20 @@ type settingsState struct {
 	fields []settingField
 	// dirty marks unsaved changes so the screen can say so.
 	dirty bool
+	// original is the settings and name as they stood when the screen opened,
+	// so a change can be abandoned rather than only committed.
+	original store.Settings
+	origName string
+}
+
+// begin records the state to fall back to if the user discards.
+func (s *settingsState) begin(m *Model) {
+	s.original = m.app.Settings
+	s.origName = m.app.Ident.DisplayName
+	s.name.SetValue(m.app.Ident.DisplayName)
+	s.dirty = false
+	s.cursor = 0
+	s.name.Blur()
 }
 
 // initSettings builds the settings rows.
@@ -51,7 +65,7 @@ func (m *Model) initSettings() {
 		},
 		{
 			label: "theme", help: themeHelp(),
-			value: func(m *Model) string { return m.style.Theme.Name + " — " + m.style.Theme.Desc },
+			value: func(m *Model) string { return m.style.Theme.Name },
 			adjust: func(m *Model, d int) {
 				all := theme.All()
 				idx := 0
@@ -103,6 +117,36 @@ func (m *Model) initSettings() {
 			},
 		},
 		{
+			label: "emoji", help: "use the snail icon where the terminal supports it",
+			value: func(m *Model) string {
+				switch {
+				case m.style.Glyphs.Logo != "":
+					return "on  " + m.style.Glyphs.Logo
+				case !m.app.Settings.Emoji:
+					return "off"
+				default:
+					return "off (not supported here)"
+				}
+			},
+			adjust: func(m *Model, _ int) {
+				m.app.Settings.Emoji = !m.app.Settings.Emoji
+				m.restyle()
+			},
+		},
+		{
+			label: "auto-resize", help: "ask the terminal to grow to fit an arena that will not fit",
+			value: func(m *Model) string {
+				if m.app.Settings.AutoResize {
+					return "on"
+				}
+				return "off"
+			},
+			adjust: func(m *Model, _ int) {
+				m.app.Settings.AutoResize = !m.app.Settings.AutoResize
+				m.settings.dirty = true
+			},
+		},
+		{
 			label: "node details", help: "show this device's tailnet address in the header",
 			value: func(m *Model) string {
 				if m.app.Settings.ShowNodeID {
@@ -126,13 +170,13 @@ func (m *Model) initSettings() {
 	}
 }
 
-// themeHelp lists the available themes for the help line.
+// themeHelp describes each theme, which is what the popover is for.
 func themeHelp() string {
-	names := make([]string, 0, len(theme.All()))
+	parts := make([]string, 0, len(theme.All()))
 	for _, t := range theme.All() {
-		names = append(names, t.Name)
+		parts = append(parts, t.Name+" — "+t.Desc)
 	}
-	return "available: " + strings.Join(names, ", ")
+	return strings.Join(parts, ".  ")
 }
 
 // restyle rebuilds the renderer after a theme, glyph or colour change.
@@ -143,9 +187,11 @@ func (m *Model) restyle() {
 			requested = parsed
 		}
 	}
-	mode := theme.Resolve(requested, theme.EnvFromOS())
+	env := theme.EnvFromOS()
+	mode := theme.Resolve(requested, env)
 	ascii := m.app.ASCIIFlag || m.app.Settings.ASCII
-	m.style = theme.NewStyle(theme.ByName(m.app.Settings.Theme), mode, ascii)
+	emoji := m.app.Settings.Emoji && theme.ResolveEmoji(m.app.EmojiFlag, env)
+	m.style = theme.NewStyle(theme.ByName(m.app.Settings.Theme), mode, ascii, emoji)
 	m.settings.dirty = true
 }
 
@@ -155,9 +201,7 @@ func (m *Model) updateSettings(msg tea.KeyMsg) tea.Cmd {
 
 	switch {
 	case key.Matches(msg, m.keys.Back):
-		cmd := m.saveSettings()
-		m.screen = m.returnTo
-		return cmd
+		return m.discardSettings()
 	case key.Matches(msg, m.keys.Up):
 		m.settings.cursor = wrapIndex(m.settings.cursor-1, len(m.settings.fields))
 		m.syncSettingsFocus()
@@ -180,10 +224,10 @@ func (m *Model) updateSettings(msg tea.KeyMsg) tea.Cmd {
 		if field.action != nil {
 			return field.action(m)
 		}
-		if field.adjust != nil && !field.text {
-			field.adjust(m, +1)
-		}
-		return nil
+		// Enter on a value row commits the lot and closes; there is no other
+		// meaning for it here, and a save key that only works on one row would
+		// be a trap.
+		return m.commitSettings()
 	}
 
 	if field.text {
@@ -197,6 +241,36 @@ func (m *Model) updateSettings(msg tea.KeyMsg) tea.Cmd {
 		return tea.Batch(cmd, m.quit())
 	}
 	return nil
+}
+
+// commitSettings saves and closes.
+func (m *Model) commitSettings() tea.Cmd {
+	cmd := m.saveSettings()
+	m.screen = m.settingsFrom
+	return cmd
+}
+
+// discardSettings puts everything back the way it was and closes.
+//
+// Theme, glyph and colour changes apply live so they can be judged, which
+// means abandoning them has to actively restore the previous look rather than
+// simply not writing the file.
+func (m *Model) discardSettings() tea.Cmd {
+	changed := m.settings.dirty ||
+		proto.SanitizeDisplayName(m.settings.name.Value()) != m.settings.origName
+
+	m.app.Settings = m.settings.original
+	m.app.Ident.DisplayName = m.settings.origName
+	m.settings.name.SetValue(m.settings.origName)
+	m.settings.dirty = false
+	m.restyle()
+	m.settings.dirty = false
+
+	m.screen = m.settingsFrom
+	if !changed {
+		return nil
+	}
+	return m.setToast(toastInfo, "Changes discarded")
 }
 
 // syncSettingsFocus focuses the name input only on its own row.
@@ -239,30 +313,51 @@ func (m *Model) viewSettings() string {
 	th := m.style.Theme
 	g := m.style.Glyphs
 
-	rows := make([]string, 0, len(m.settings.fields)*2+6)
+	// Every field occupies exactly one row. A value that would wrap breaks the
+	// alignment of everything below it and moves the popover's anchor, so it
+	// is trimmed instead.
+	panelWidth := min(max(m.width-8, 44), 66)
+	inner := panelWidth - 4 // border and padding
+
+	rows := make([]string, 0, len(m.settings.fields)+6)
+	// The panel's own top border sits above the first row.
+	const panelHeaderRows = 1
+	selectedRow := panelHeaderRows
+
 	for i, f := range m.settings.fields {
-		selected := i == m.settings.cursor
 		marker := "  "
 		label := m.style.DimText(pad(f.label, 16))
-		value := m.style.Text(th.Fg, f.value(m))
-		if selected {
+		if i == m.settings.cursor {
 			marker = m.style.Accent(g.Arrow + " ")
 			label = m.style.Text(th.Accent, pad(f.label, 16))
+			selectedRow = panelHeaderRows + len(rows)
 		}
-		rows = append(rows, marker+label+value)
-		if selected && f.help != "" {
-			rows = append(rows, m.style.FaintText("     "+f.help))
-		}
+		rows = append(rows, truncateStyled(marker+label+m.style.Text(th.Fg, f.value(m)), inner))
 	}
 
 	rows = append(rows, "", m.style.FaintText(strings.Repeat(g.Horizontal, 46)))
 	rows = append(rows, m.identityLines()...)
 	rows = append(rows, m.palettePreview())
 
-	panel := m.style.Panel().Width(min(max(m.width-8, 44), 66)).Render(
+	panel := m.style.Panel().Width(panelWidth).Render(
 		lipgloss.JoinVertical(lipgloss.Left, rows...))
-	return m.chrome("settings", "", m.center(panel, m.bodyHeight()), []hint{
-		{"↑/↓", "field"}, {"←/→", "change"}, {"esc", "save & back"},
+
+	frame, top, left := m.place(panel, m.bodyHeight())
+	frame = m.withTooltip(frame, tooltip{
+		text:       m.settings.fields[m.settings.cursor].help,
+		row:        selectedRow,
+		panelTop:   top,
+		panelLeft:  left,
+		panelWidth: lipgloss.Width(panel),
+	})
+
+	title := "settings"
+	if m.settings.dirty {
+		title += " (unsaved)"
+	}
+	return m.chrome(title, "", frame, []hint{
+		{"↑/↓", "field"}, {"←/→", "change"},
+		{"enter", "save & close"}, {"esc", "discard"},
 	})
 }
 

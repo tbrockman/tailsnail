@@ -13,6 +13,7 @@ import (
 
 	"github.com/theolol/tailsnail/internal/game"
 	"github.com/theolol/tailsnail/internal/netplay"
+	"github.com/theolol/tailsnail/internal/proto"
 	"github.com/theolol/tailsnail/internal/store"
 )
 
@@ -36,6 +37,29 @@ type formState struct {
 	name   textinput.Model
 	cursor int
 	fields []formField
+	// editing is true when the form is adjusting a lobby that already exists
+	// rather than describing one to open.
+	editing bool
+}
+
+// editFrom loads a running lobby's settings so the host can adjust them in
+// place. The seat count cannot drop below the people already sitting in it.
+func (f *formState) editFrom(st proto.LobbyState) {
+	f.cfg = st.Config
+	f.name.SetValue(st.Name)
+	f.editing = true
+	f.cursor = 0
+	f.name.Blur()
+
+	people := 0
+	for _, p := range st.Players {
+		if !p.Bot {
+			people++
+		}
+	}
+	if f.cfg.MaxPlayers < people {
+		f.cfg.MaxPlayers = people
+	}
 }
 
 // initForm builds the form, restoring the last hosted configuration so a
@@ -47,6 +71,7 @@ func (m *Model) initForm() {
 		cfg.Width, cfg.Height = p.Width, p.Height
 		cfg.TickRate, cfg.TicksPerMove = p.TickRate, p.TicksPerMove
 		cfg.MaxPlayers = p.MaxPlayers
+		cfg.Bots = p.Bots
 		cfg.Wrap = p.Wrap
 		if game.Mode(p.Mode).Valid() {
 			cfg.Mode = game.Mode(p.Mode)
@@ -96,14 +121,16 @@ func (m *Model) initForm() {
 			},
 		},
 		{
-			label: "snake speed", help: "ticks between moves — lower is faster",
+			label: "snake speed", help: "how fast a snake crosses the arena",
 			value: func(m *Model) string {
 				cfg := m.form.cfg
-				cells := float64(cfg.TickRate) / float64(cfg.TicksPerMove)
-				return fmt.Sprintf("%d (%.1f cells/s)", cfg.TicksPerMove, cells)
+				return fmt.Sprintf("%.1f cells/s", float64(cfg.TickRate)/float64(cfg.TicksPerMove))
 			},
+			// Right means faster. The underlying setting is ticks per move, so
+			// larger is slower; presenting that raw made the arrow keys read
+			// backwards.
 			adjust: func(m *Model, d int) {
-				m.form.cfg.TicksPerMove = clampInt(m.form.cfg.TicksPerMove+d, 1, 10)
+				m.form.cfg.TicksPerMove = clampInt(m.form.cfg.TicksPerMove-d, 1, 10)
 			},
 		},
 		{
@@ -111,6 +138,19 @@ func (m *Model) initForm() {
 			value: func(m *Model) string { return fmt.Sprintf("%d", m.form.cfg.MaxPlayers) },
 			adjust: func(m *Model, d int) {
 				m.form.cfg.MaxPlayers = clampInt(m.form.cfg.MaxPlayers+d, game.MinPlayers, game.MaxPlayers)
+				m.form.cfg.Bots = min(m.form.cfg.Bots, m.form.cfg.MaxPlayers-1)
+			},
+		},
+		{
+			label: "bots", help: "computer players, so a lobby can be played without waiting for anyone",
+			value: func(m *Model) string {
+				if m.form.cfg.Bots == 0 {
+					return "none"
+				}
+				return fmt.Sprintf("%d of %d seats", m.form.cfg.Bots, m.form.cfg.MaxPlayers)
+			},
+			adjust: func(m *Model, d int) {
+				m.form.cfg.Bots = clampInt(m.form.cfg.Bots+d, 0, m.form.cfg.MaxPlayers-1)
 			},
 		},
 		{
@@ -183,6 +223,7 @@ func (m *Model) updateForm(msg tea.KeyMsg) tea.Cmd {
 
 	switch {
 	case key.Matches(msg, m.keys.Back):
+		m.form.editing = false
 		m.screen = m.returnTo
 		return nil
 	case key.Matches(msg, m.keys.Up):
@@ -204,7 +245,7 @@ func (m *Model) updateForm(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	case msg.Type == tea.KeyEnter:
-		return m.startHosting()
+		return m.submitForm()
 	}
 
 	if field.text {
@@ -228,6 +269,32 @@ func (m *Model) syncNameFocus() {
 	}
 }
 
+// submitForm applies the form: opening a new lobby, or updating a running one.
+func (m *Model) submitForm() tea.Cmd {
+	if m.form.editing {
+		return m.applyLobbyEdits()
+	}
+	return m.startHosting()
+}
+
+// applyLobbyEdits pushes the edited settings to the lobby the host is running.
+func (m *Model) applyLobbyEdits() tea.Cmd {
+	cfg := m.form.cfg
+	name := strings.TrimSpace(m.form.name.Value())
+	if err := cfg.Validate(); err != nil {
+		return m.setToast(toastErr, "%v", err)
+	}
+	if m.session == nil || !m.session.IsHost() {
+		m.form.editing = false
+		m.screen = screenMenu
+		return m.setToast(toastWarn, "That lobby is no longer yours")
+	}
+	m.session.Reconfigure(name, cfg)
+	m.form.editing = false
+	m.screen = screenRoom
+	return m.setToast(toastOk, "Settings updated")
+}
+
 // startHosting validates the form and opens the lobby.
 func (m *Model) startHosting() tea.Cmd {
 	cfg := m.form.cfg
@@ -243,7 +310,7 @@ func (m *Model) startHosting() tea.Cmd {
 	m.app.Settings.LastConfig = &store.HostPrefs{
 		Name: cfg.Name, Width: cfg.Width, Height: cfg.Height,
 		TickRate: cfg.TickRate, TicksPerMove: cfg.TicksPerMove,
-		MaxPlayers: cfg.MaxPlayers, Wrap: cfg.Wrap, Mode: string(cfg.Mode),
+		MaxPlayers: cfg.MaxPlayers, Bots: cfg.Bots, Wrap: cfg.Wrap, Mode: string(cfg.Mode),
 	}
 	if err := store.SaveSettings(m.app.StateDir, m.app.Settings); err != nil {
 		m.app.Log.Logf("ui: saving host preferences: %v", err)
@@ -266,8 +333,17 @@ func (m *Model) viewForm() string {
 	th := m.style.Theme
 	g := m.style.Glyphs
 
-	rows := make([]string, 0, len(m.form.fields)+4)
-	for _, idx := range m.visibleFields() {
+	// One row per field: a wrapped value would shift every row beneath it.
+	panelWidth := min(max(m.width-8, 40), 60)
+	inner := panelWidth - 4 // border and padding
+
+	visible := m.visibleFields()
+	rows := make([]string, 0, len(visible)+4)
+	const panelHeaderRows = 1
+	selectedRow := panelHeaderRows
+	selectedHelp := ""
+
+	for _, idx := range visible {
 		f := m.form.fields[idx]
 		selected := idx == m.form.cursor
 
@@ -277,32 +353,48 @@ func (m *Model) viewForm() string {
 		if selected {
 			marker = m.style.Accent(g.Arrow + " ")
 			label = m.style.Text(th.Accent, pad(f.label, 14))
+			selectedRow = panelHeaderRows + len(rows)
+			selectedHelp = f.help
 			if !f.text {
 				// Show the adjustment affordance only where it applies.
-				value = m.style.FaintText("‹ ") + value + m.style.FaintText(" ›")
+				left, right := "‹ ", " ›"
 				if g.ASCII {
-					value = m.style.FaintText("< ") + m.style.Text(th.Fg, f.value(m)) + m.style.FaintText(" >")
+					left, right = "< ", " >"
 				}
+				value = m.style.FaintText(left) + m.style.Text(th.Fg, f.value(m)) + m.style.FaintText(right)
 			}
 		}
-		rows = append(rows, marker+label+value)
-		if selected && f.help != "" {
-			rows = append(rows, m.style.FaintText("     "+f.help))
-		}
+		rows = append(rows, truncateStyled(marker+label+value, inner))
 	}
 
 	rows = append(rows, "", m.style.FaintText(strings.Repeat(g.Horizontal, 44)), m.sizeAdvice())
 
-	panel := m.style.Panel().Width(min(max(m.width-8, 40), 60)).Render(
+	panel := m.style.Panel().Width(panelWidth).Render(
 		lipgloss.JoinVertical(lipgloss.Left, rows...))
 
-	body := lipgloss.JoinVertical(lipgloss.Center,
-		panel,
-		"",
-		m.style.Text(th.Accent, "press enter to open the lobby"),
-	)
-	return m.chrome("host a game", "", m.center(body, m.bodyHeight()), []hint{
-		{"↑/↓", "field"}, {"←/→", "change"}, {"enter", "host"}, {"esc", "back"},
+	action := "press enter to open the lobby"
+	if m.form.editing {
+		action = "press enter to apply — everyone will need to ready up again"
+	}
+	body := lipgloss.JoinVertical(lipgloss.Center, panel, "", m.style.Text(th.Accent, action))
+
+	frame, top, left := m.place(body, m.bodyHeight())
+	// The panel is the first block of the joined body, so its top edge is the
+	// placed body's top edge.
+	frame = m.withTooltip(frame, tooltip{
+		text:       selectedHelp,
+		row:        selectedRow,
+		panelTop:   top,
+		panelLeft:  left + (lipgloss.Width(body)-lipgloss.Width(panel))/2,
+		panelWidth: lipgloss.Width(panel),
+	})
+
+	title, back := "host a game", "back"
+	if m.form.editing {
+		title, back = "lobby settings", "cancel"
+	}
+	return m.chrome(title, "", frame, []hint{
+		{"↑/↓", "field"}, {"←/→", "change"}, {"enter", "apply"}, {"esc", back},
 	})
 }
 

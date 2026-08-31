@@ -197,7 +197,7 @@ func TestTermColorEmitsNothingWithoutColor(t *testing.T) {
 		// lipgloss.NoColor still satisfies color.Color; the point is only that
 		// it is not a concrete colour value.
 	}
-	s := NewStyle(Neon, ModeNone, false)
+	s := NewStyle(Neon, ModeNone, false, false)
 	rendered := s.Text(c, "hello")
 	if strings.ContainsRune(rendered, 0x1b) {
 		t.Errorf("ModeNone emitted an escape sequence: %q", rendered)
@@ -437,11 +437,106 @@ func TestUnicodeGlyphsAreSingleRunes(t *testing.T) {
 }
 
 func TestSetSelectsTheRequestedGlyphs(t *testing.T) {
-	if Set(true).ASCII != true {
-		t.Error("Set(true) did not return the ASCII glyphs")
+	if !Set(true, false).ASCII {
+		t.Error("Set(ascii) did not return the ASCII glyphs")
 	}
-	if Set(false).ASCII != false {
-		t.Error("Set(false) did not return the Unicode glyphs")
+	if Set(false, false).ASCII {
+		t.Error("Set(unicode) did not return the Unicode glyphs")
+	}
+	if got := Set(false, true).Logo; got != SnailIcon {
+		t.Errorf("Logo = %q, want the snail", got)
+	}
+	if got := Set(false, false).Logo; got != "" {
+		t.Errorf("Logo = %q, want none without emoji support", got)
+	}
+	// Asking for plain ASCII rules out emoji too.
+	if got := Set(true, true).Logo; got != "" {
+		t.Errorf("Logo = %q, want none in ASCII mode", got)
+	}
+}
+
+func TestEmojiDetection(t *testing.T) {
+	cases := []struct {
+		name string
+		env  Env
+		want bool
+	}{
+		{"iterm with utf-8", Env{Locale: "en_GB.UTF-8", Term: "xterm-256color", TermProgram: "iTerm.app"}, true},
+		{"apple terminal", Env{Locale: "en_US.UTF-8", Term: "xterm-256color", TermProgram: "Apple_Terminal"}, true},
+		{"kitty by term", Env{Locale: "en_US.UTF-8", Term: "xterm-kitty"}, true},
+		{"ghostty by term", Env{Locale: "C.utf8", Term: "xterm-ghostty"}, true},
+		{"no utf-8 locale", Env{Locale: "C", Term: "xterm-256color", TermProgram: "iTerm.app"}, false},
+		{"no locale at all", Env{Term: "xterm-256color", TermProgram: "iTerm.app"}, false},
+		{"unknown terminal", Env{Locale: "en_US.UTF-8", Term: "xterm-256color"}, false},
+		{"linux console", Env{Locale: "en_US.UTF-8", Term: "linux"}, false},
+		{"dumb", Env{Locale: "en_US.UTF-8", Term: "dumb", TermProgram: "iTerm.app"}, false},
+		{"no term", Env{Locale: "en_US.UTF-8"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EmojiSupported(tc.env); got != tc.want {
+				t.Errorf("EmojiSupported(%+v) = %v, want %v", tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveEmojiHonoursAnExplicitChoice(t *testing.T) {
+	bare := Env{Locale: "C", Term: "dumb"}
+	rich := Env{Locale: "en_US.UTF-8", Term: "xterm-kitty"}
+
+	if !ResolveEmoji(EmojiOn, bare) {
+		t.Error("--emoji=on was overridden by detection")
+	}
+	if ResolveEmoji(EmojiOff, rich) {
+		t.Error("--emoji=off was overridden by detection")
+	}
+	if ResolveEmoji(EmojiAuto, bare) {
+		t.Error("auto enabled emoji on a bare terminal")
+	}
+	if !ResolveEmoji(EmojiAuto, rich) {
+		t.Error("auto disabled emoji on a capable terminal")
+	}
+}
+
+func TestParseEmojiMode(t *testing.T) {
+	for _, name := range EmojiModeNames() {
+		if _, ok := ParseEmojiMode(name); !ok {
+			t.Errorf("ParseEmojiMode(%q) rejected a documented mode", name)
+		}
+	}
+	if got, ok := ParseEmojiMode(" ON "); !ok || got != EmojiOn {
+		t.Errorf("ParseEmojiMode = %q, %v", got, ok)
+	}
+	if _, ok := ParseEmojiMode("snails"); ok {
+		t.Error("ParseEmojiMode accepted a nonsense mode")
+	}
+}
+
+func TestSnailIconIsASingleGrapheme(t *testing.T) {
+	// A multi-codepoint emoji sequence would be measured inconsistently across
+	// terminals, so the icon is deliberately a plain single-rune emoji.
+	if n := len([]rune(SnailIcon)); n != 1 {
+		t.Fatalf("the icon is %d runes; a single codepoint is what measures reliably", n)
+	}
+}
+
+func TestSecondaryTextIsLegibleAgainstTheBackground(t *testing.T) {
+	// Dim and faint text are used for descriptions, rules and hints. If they
+	// sit too close to the background they simply are not readable, which is
+	// what the first pass at these palettes got wrong.
+	for _, th := range All() {
+		bg := th.Bg.Luminance()
+		if gap := th.Dim.Luminance() - bg; gap < 0.45 {
+			t.Errorf("theme %q: dim text is only %.2f above the background", th.Name, gap)
+		}
+		if gap := th.Faint.Luminance() - bg; gap < 0.25 {
+			t.Errorf("theme %q: faint text is only %.2f above the background", th.Name, gap)
+		}
+		// Faint must still read as quieter than dim, or the hierarchy is lost.
+		if th.Faint.Luminance() >= th.Dim.Luminance() {
+			t.Errorf("theme %q: faint text is not quieter than dim text", th.Name)
+		}
 	}
 }
 

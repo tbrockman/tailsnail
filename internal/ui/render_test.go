@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theolol/tailsnail/internal/discovery"
 	"github.com/theolol/tailsnail/internal/game"
@@ -48,6 +50,8 @@ func newTestModel(t *testing.T) *Model {
 		StateDir:  dir,
 		Settings:  store.DefaultSettings(),
 		ColorFlag: theme.ModeTrueColor,
+		// Pinned so a render test does not depend on the terminal it runs in.
+		EmojiFlag: theme.EmojiOff,
 	}
 	m := New(app)
 	m.width, m.height = 120, 40
@@ -367,8 +371,21 @@ func TestRoomRendersAllPhases(t *testing.T) {
 				m.room.state.Countdown = 2
 			}
 			checkFrame(t, m, "room/"+string(phase), m.View())
-
 			plain := stripANSI(m.View())
+
+			if phase == proto.PhaseCountdown {
+				// The countdown owns the screen; the roster would only be
+				// noise under a swelling digit.
+				for _, unwanted := range []string{"ada", "grace", "seats", "activity"} {
+					if strings.Contains(plain, unwanted) {
+						t.Errorf("the countdown still shows %q", unwanted)
+					}
+				}
+				if !strings.Contains(plain, "starting") {
+					t.Errorf("the countdown does not say what is happening:\n%s", plain)
+				}
+				return
+			}
 			for _, want := range []string{"ada", "grace", "hedy", "friday night"} {
 				if !strings.Contains(plain, want) {
 					t.Errorf("room is missing %q", want)
@@ -590,8 +607,8 @@ func TestGameOverRenders(t *testing.T) {
 
 	// Before the record arrives.
 	checkFrame(t, m, "gameover/pending", m.View())
-	if !strings.Contains(stripANSI(m.View()), "collecting signatures") {
-		t.Error("the results screen does not show that attestation is pending")
+	if !strings.Contains(stripANSI(m.View()), "saving result") {
+		t.Error("the results screen does not show that the result is being saved")
 	}
 
 	// And after.
@@ -603,15 +620,21 @@ func TestGameOverRenders(t *testing.T) {
 	if !strings.Contains(plain, "wins") {
 		t.Error("the results screen does not name a winner")
 	}
-	if !strings.Contains(plain, "signed by all 4 players") {
-		t.Errorf("the results screen does not report full attestation:\n%s", plain)
+	if !strings.Contains(plain, "added to your history") {
+		t.Errorf("the results screen does not confirm the result was saved:\n%s", plain)
+	}
+	// Attestation is machinery; the history screen is where it belongs.
+	for _, jargon := range []string{"signed", "signature", "attest"} {
+		if strings.Contains(strings.ToLower(plain), jargon) {
+			t.Errorf("the results screen leaks %q at the player:\n%s", jargon, plain)
+		}
 	}
 
-	// A partially attested record must say so rather than claiming success.
+	// A partially attested record must not change what a player is told here.
 	partial := signedRecord(t, m, 4, 2)
 	m.over.record = &partial
-	if !strings.Contains(stripANSI(m.View()), "partial 2/4") {
-		t.Error("a partially attested record is not flagged")
+	if !strings.Contains(stripANSI(m.View()), "added to your history") {
+		t.Error("a partially attested record changed the confirmation")
 	}
 
 	// Mid-slide, before the dialog settles.
@@ -987,14 +1010,15 @@ type fakeSession struct {
 	seat game.PlayerID
 }
 
-func (f *fakeSession) Events() <-chan netplay.Event { return nil }
-func (f *fakeSession) Seat() game.PlayerID          { return f.seat }
-func (f *fakeSession) IsHost() bool                 { return f.host }
-func (f *fakeSession) LobbyID() string              { return "test-lobby" }
-func (f *fakeSession) SetReady(bool)                {}
-func (f *fakeSession) Input(game.Direction)         {}
-func (f *fakeSession) Kick(game.PlayerID)           {}
-func (f *fakeSession) Close(string)                 {}
+func (f *fakeSession) Events() <-chan netplay.Event    { return nil }
+func (f *fakeSession) Seat() game.PlayerID             { return f.seat }
+func (f *fakeSession) IsHost() bool                    { return f.host }
+func (f *fakeSession) LobbyID() string                 { return "test-lobby" }
+func (f *fakeSession) SetReady(bool)                   {}
+func (f *fakeSession) Input(game.Direction)            {}
+func (f *fakeSession) Kick(game.PlayerID)              {}
+func (f *fakeSession) Reconfigure(string, game.Config) {}
+func (f *fakeSession) Close(string)                    {}
 
 // stripANSI removes escape sequences so assertions can look at the text.
 func stripANSI(s string) string {
@@ -1018,4 +1042,320 @@ func stripANSI(s string) string {
 		i++
 	}
 	return b.String()
+}
+
+func TestFieldListDoesNotShiftAsTheSelectionMoves(t *testing.T) {
+	// This is the whole point of moving descriptions into a popover: an
+	// inline description changes the panel's height, so every row below the
+	// selection jumps by a line on each keypress.
+	screens := []struct {
+		name   string
+		screen screen
+		count  func(*Model) int
+		set    func(*Model, int)
+	}{
+		{"host form", screenHostForm,
+			func(m *Model) int { return len(m.visibleFields()) },
+			func(m *Model, i int) { m.form.cursor = m.visibleFields()[i] }},
+		{"settings", screenSettings,
+			func(m *Model) int { return len(m.settings.fields) },
+			func(m *Model, i int) { m.settings.cursor = i }},
+	}
+
+	for _, sc := range screens {
+		t.Run(sc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			m.screen = sc.screen
+
+			// Where each field label sits vertically, for the first selection.
+			var baseline map[string]int
+			for i := range sc.count(m) {
+				sc.set(m, i)
+				rows := labelRows(stripANSI(m.View()))
+				if baseline == nil {
+					baseline = rows
+					continue
+				}
+				for label, row := range baseline {
+					got, ok := rows[label]
+					if !ok {
+						t.Fatalf("selection %d lost the row %q entirely", i, label)
+					}
+					if got != row {
+						t.Errorf("selection %d moved %q from line %d to line %d", i, label, row, got)
+					}
+				}
+			}
+		})
+	}
+}
+
+// labelRows maps each field label to the line it appears on. Labels are the
+// left-most word on a row inside the panel, which is enough to track movement.
+func labelRows(view string) map[string]int {
+	out := map[string]int{}
+	for i, line := range strings.Split(view, "\n") {
+		// Strip the panel border and the selection marker, which is exactly
+		// what distinguishes a selected row from an unselected one.
+		trimmed := strings.TrimSpace(strings.Trim(line, "│|╭╮╰╯─-+›> "))
+		if trimmed == "" {
+			continue
+		}
+		for _, label := range []string{
+			"lobby name", "arena width", "arena height", "tick rate", "snake speed",
+			"max players", "bots", "walls", "mode", "shrink every", "food",
+			"display name", "theme", "glyphs", "colour", "emoji", "auto-resize",
+			"node details", "re-authenticate",
+		} {
+			if strings.HasPrefix(trimmed, label) {
+				if _, seen := out[label]; !seen {
+					out[label] = i
+				}
+			}
+		}
+	}
+	return out
+}
+
+func TestSelectedFieldGetsAPopoverDescription(t *testing.T) {
+	m := newTestModel(t)
+	m.screen = screenHostForm
+	m.width, m.height = 140, 40
+	m.form.cursor = 1 // arena width
+
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "120") {
+		t.Errorf("the description for the selected field is missing:\n%s", plain)
+	}
+	// The pointer ties the popover to its row.
+	if !strings.Contains(m.View(), m.style.Glyphs.PointLeft) &&
+		!strings.Contains(m.View(), m.style.Glyphs.PointRight) {
+		t.Error("the popover has no pointer tying it to the field")
+	}
+	checkFrame(t, m, "hostform/popover", m.View())
+}
+
+func TestHostFormShowsBotsAndReadsSpeedAsSpeed(t *testing.T) {
+	m := newTestModel(t)
+	m.screen = screenHostForm
+
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "bots") {
+		t.Error("the host form does not offer bots")
+	}
+	if !strings.Contains(plain, "cells/s") {
+		t.Errorf("snake speed is not expressed as a speed:\n%s", plain)
+	}
+}
+
+func TestHostFormEditModeRendersDifferently(t *testing.T) {
+	m := newTestModel(t)
+	m.screen = screenHostForm
+	m.form.editFrom(sampleLobby(proto.PhaseOpen, 2))
+
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "lobby settings") {
+		t.Errorf("edit mode does not say what it is:\n%s", plain)
+	}
+	if !strings.Contains(plain, "ready up again") {
+		t.Error("edit mode does not warn that everyone will be un-readied")
+	}
+	if !strings.Contains(plain, "cancel") {
+		t.Error("edit mode offers no way to back out")
+	}
+	checkFrame(t, m, "hostform/editing", m.View())
+}
+
+func TestActivityModalRendersAndPages(t *testing.T) {
+	m := newTestModel(t)
+	m.node = runningNode()
+	m.screen = screenRoom
+	m.session = &fakeSession{host: true}
+
+	lobby := sampleLobby(proto.PhaseOpen, 3)
+	for i := range 30 {
+		lobby.Events = append(lobby.Events, proto.LobbyEvent{
+			At:   time.Now(),
+			Text: fmt.Sprintf("event %d with quite a lot of text so that it has to wrap somewhere", i),
+		})
+	}
+	m.room.apply(lobby)
+
+	// Not shown until asked for: the room is about the roster.
+	if strings.Contains(stripANSI(m.View()), "event 29") {
+		t.Error("the activity feed is on screen without being asked for")
+	}
+
+	m.openModal(modalActivity)
+	view := m.View()
+	checkFrame(t, m, "activity modal", view)
+	if !strings.Contains(stripANSI(view), "activity") {
+		t.Error("the activity dialog has no title")
+	}
+	if !strings.Contains(stripANSI(view), "event 29") {
+		t.Error("the activity dialog does not show the newest event")
+	}
+
+	for _, top := range []int{0, 5, 25, 100} {
+		m.modalTop = top
+		checkFrame(t, m, "activity modal scrolled", m.View())
+	}
+
+	// An empty feed says so rather than showing a blank box.
+	m.room.state.Events = nil
+	m.modalTop = 0
+	if !strings.Contains(stripANSI(m.View()), "nothing has happened") {
+		t.Error("an empty activity dialog does not explain itself")
+	}
+}
+
+func TestResultsPlaceNumbersLineUp(t *testing.T) {
+	cfg := game.DefaultConfig()
+	m := gameFixture(t, 4, cfg)
+	final := m.game.state
+	final.Over = true
+	for i := range final.Snakes {
+		final.Snakes[i].Placement = i + 1
+	}
+	m.over.apply(netplay.MatchOver{State: final, Players: samplePlayers(4)}, m.room.state, m.now)
+	m.screen = screenGameOver
+
+	// Every place digit must start in the same display column, including first
+	// place, whose winner mark lives in its own column. Positions are measured
+	// in cells rather than bytes: the check mark is three bytes wide and one
+	// cell, so a byte offset would report a misalignment that is not there.
+	var columns []int
+	for _, line := range strings.Split(stripANSI(m.View()), "\n") {
+		for place := 1; place <= 4; place++ {
+			needle := fmt.Sprintf("%d ", place)
+			idx := strings.Index(line, needle)
+			// Only rows that also carry a player name are result rows.
+			if idx > 0 && strings.Contains(line, samplePlayers(4)[place-1].DisplayName) {
+				columns = append(columns, ansi.StringWidth(line[:idx]))
+			}
+		}
+	}
+	if len(columns) != 4 {
+		t.Fatalf("found %d result rows, want 4", len(columns))
+	}
+	for i, c := range columns {
+		if c != columns[0] {
+			t.Errorf("place %d starts at column %d, but place 1 starts at %d", i+1, c, columns[0])
+		}
+	}
+}
+
+func TestHeaderCarriesTheSnailWhenEmojiAreAvailable(t *testing.T) {
+	m := newTestModel(t)
+	m.app.EmojiFlag = theme.EmojiOn
+	m.restyle()
+	m.screen = screenMenu
+	m.node = runningNode()
+
+	view := m.View()
+	if !strings.Contains(view, theme.SnailIcon) {
+		t.Error("the header does not carry the snail icon with emoji enabled")
+	}
+	// A double-width glyph must not push the header past the viewport.
+	checkFrame(t, m, "menu with emoji", view)
+	if got := m.windowTitle(); !strings.Contains(got, theme.SnailIcon) {
+		t.Errorf("window title = %q, want the icon", got)
+	}
+
+	m.app.EmojiFlag = theme.EmojiOff
+	m.restyle()
+	if strings.Contains(m.View(), theme.SnailIcon) {
+		t.Error("the icon survived turning emoji off")
+	}
+	if got := m.windowTitle(); strings.Contains(got, theme.SnailIcon) {
+		t.Errorf("window title = %q, want no icon", got)
+	}
+}
+
+func TestAnimationRunsOnWallClockNotFrameCount(t *testing.T) {
+	// Decoration must look the same regardless of how often the loop happens
+	// to run, which is what ties it to elapsed time rather than frames.
+	m := newTestModel(t)
+	base := m.phase(time.Second)
+
+	m.frame += 1000
+	if got := m.phase(time.Second); got != base {
+		t.Fatal("the animation phase moved when only the frame counter did")
+	}
+	m.now = m.now.Add(250 * time.Millisecond)
+	if got := m.phase(time.Second); got == base {
+		t.Fatal("the animation phase did not move when time passed")
+	}
+	// A full cycle returns to where it started.
+	m.now = m.now.Add(750 * time.Millisecond)
+	if got := m.phase(time.Second); abs64(got-base) > 1e-9 {
+		t.Errorf("phase after a full cycle = %v, want %v", got, base)
+	}
+}
+
+func abs64(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func TestEveryFieldOccupiesExactlyOneRow(t *testing.T) {
+	// A value long enough to wrap would push every row below it down and move
+	// the popover's anchor off the field it describes.
+	cases := []struct {
+		name   string
+		screen screen
+		labels []string
+	}{
+		{"host form", screenHostForm, []string{
+			"lobby name", "arena width", "arena height", "tick rate",
+			"snake speed", "max players", "bots", "walls", "mode", "food",
+		}},
+		{"settings", screenSettings, []string{
+			"display name", "theme", "glyphs", "colour", "emoji",
+			"auto-resize", "node details", "re-authenticate",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, width := range []int{62, 80, 120} {
+				m := newTestModel(t)
+				m.screen = tc.screen
+				m.width, m.height = width, 40
+
+				rows := labelRows(stripANSI(m.View()))
+				for _, label := range tc.labels {
+					row, ok := rows[label]
+					if !ok {
+						t.Errorf("width %d: field %q is missing", width, label)
+						continue
+					}
+					// The next field must be on the very next line.
+					for _, other := range tc.labels {
+						if other == label {
+							continue
+						}
+						if rows[other] == row {
+							t.Errorf("width %d: %q and %q share line %d", width, label, other, row)
+						}
+					}
+				}
+				// The rows must be consecutive: any gap means one wrapped.
+				var lines []int
+				for _, label := range tc.labels {
+					if r, ok := rows[label]; ok {
+						lines = append(lines, r)
+					}
+				}
+				sort.Ints(lines)
+				for i := 1; i < len(lines); i++ {
+					if lines[i] != lines[i-1]+1 {
+						t.Errorf("width %d: a gap between field rows %d and %d suggests a wrapped value",
+							width, lines[i-1], lines[i])
+					}
+				}
+			}
+		})
+	}
 }

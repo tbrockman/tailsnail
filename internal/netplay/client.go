@@ -217,6 +217,10 @@ func (c *Client) Input(dir game.Direction) {
 // Kick implements Session. Only a host can remove seats, so this is a no-op.
 func (c *Client) Kick(game.PlayerID) {}
 
+// Reconfigure implements Session. Only the host owns the settings, so this is
+// a no-op; a client's own settings screen changes only how it draws the game.
+func (c *Client) Reconfigure(string, game.Config) {}
+
 // Close implements Session, leaving the lobby.
 func (c *Client) Close(reason string) {
 	c.setReason(reason, nil)

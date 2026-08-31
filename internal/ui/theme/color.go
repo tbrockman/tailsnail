@@ -52,20 +52,119 @@ func ModeNames() []string {
 	return []string{string(ModeAuto), string(ModeTrueColor), string(Mode256), string(Mode16), string(ModeNone)}
 }
 
-// Env is the slice of the environment colour detection reads. It is a struct
-// so the detection logic can be tested without touching the real environment.
+// Env is the slice of the environment that terminal detection reads. It is a
+// struct so the logic can be tested without touching the real environment.
 type Env struct {
-	NoColor   string
-	ColorTerm string
-	Term      string
+	NoColor     string
+	ColorTerm   string
+	Term        string
+	TermProgram string
+	Locale      string
 }
 
 // EnvFromOS reads the relevant variables from the process environment.
 func EnvFromOS() Env {
+	locale := os.Getenv("LC_ALL")
+	if locale == "" {
+		locale = os.Getenv("LC_CTYPE")
+	}
+	if locale == "" {
+		locale = os.Getenv("LANG")
+	}
 	return Env{
-		NoColor:   os.Getenv("NO_COLOR"),
-		ColorTerm: os.Getenv("COLORTERM"),
-		Term:      os.Getenv("TERM"),
+		NoColor:     os.Getenv("NO_COLOR"),
+		ColorTerm:   os.Getenv("COLORTERM"),
+		Term:        os.Getenv("TERM"),
+		TermProgram: os.Getenv("TERM_PROGRAM"),
+		Locale:      locale,
+	}
+}
+
+// EmojiMode controls whether the interface uses emoji.
+type EmojiMode string
+
+// The emoji modes. Auto applies the detection below.
+const (
+	EmojiAuto EmojiMode = "auto"
+	EmojiOn   EmojiMode = "on"
+	EmojiOff  EmojiMode = "off"
+)
+
+// ParseEmojiMode validates an --emoji value.
+func ParseEmojiMode(s string) (EmojiMode, bool) {
+	switch EmojiMode(strings.ToLower(strings.TrimSpace(s))) {
+	case EmojiAuto:
+		return EmojiAuto, true
+	case EmojiOn:
+		return EmojiOn, true
+	case EmojiOff:
+		return EmojiOff, true
+	}
+	return EmojiAuto, false
+}
+
+// EmojiModeNames lists the accepted --emoji values.
+func EmojiModeNames() []string {
+	return []string{string(EmojiAuto), string(EmojiOn), string(EmojiOff)}
+}
+
+// emojiTermPrograms are terminal emulators known to render emoji at the width
+// they advertise. The list is deliberately conservative: a terminal that
+// disagrees with us about how many cells an emoji occupies shifts everything
+// after it on the line, which is worse than simply not showing a snail.
+var emojiTermPrograms = map[string]bool{
+	"iterm.app":      true,
+	"apple_terminal": true,
+	"wezterm":        true,
+	"vscode":         true,
+	"ghostty":        true,
+	"hyper":          true,
+	"warp":           true,
+	"rio":            true,
+	"tabby":          true,
+	"kitty":          true,
+	"alacritty":      true,
+}
+
+// emojiTerms are TERM values from emulators that set TERM rather than
+// TERM_PROGRAM.
+var emojiTerms = []string{"kitty", "alacritty", "wezterm", "ghostty", "contour", "foot", "rio"}
+
+// EmojiSupported reports whether emoji are likely to render correctly.
+//
+// There is no capability query for this, so it is a heuristic: a UTF-8 locale
+// is required, and the terminal has to be one known to handle emoji width.
+// Anything unrecognised is assumed not to, because the cost of guessing wrong
+// is a sheared line rather than a missing decoration.
+func EmojiSupported(env Env) bool {
+	locale := strings.ToLower(env.Locale)
+	if !strings.Contains(locale, "utf-8") && !strings.Contains(locale, "utf8") {
+		return false
+	}
+	term := strings.ToLower(env.Term)
+	if term == "" || term == "dumb" || term == "linux" || strings.HasPrefix(term, "vt") {
+		return false
+	}
+	if emojiTermPrograms[strings.ToLower(env.TermProgram)] {
+		return true
+	}
+	for _, t := range emojiTerms {
+		if strings.Contains(term, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveEmoji turns a requested emoji mode into a decision.
+func ResolveEmoji(requested EmojiMode, env Env) bool {
+	switch requested {
+	case EmojiOn:
+		return true
+	case EmojiOff:
+		return false
+	default:
+		return EmojiSupported(env)
 	}
 }
 

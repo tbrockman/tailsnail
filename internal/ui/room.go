@@ -55,6 +55,10 @@ func (m *Model) updateRoom(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch {
+	case key.Matches(msg, m.keys.Activity):
+		m.openModal(modalActivity)
+	case key.Matches(msg, m.keys.Edit):
+		return m.editLobbySettings()
 	case key.Matches(msg, m.keys.Up):
 		m.room.cursor = wrapIndex(m.room.cursor-1, len(m.room.state.Players))
 	case key.Matches(msg, m.keys.Down):
@@ -76,6 +80,21 @@ func (m *Model) updateRoom(msg tea.KeyMsg) tea.Cmd {
 	case msg.String() == "q":
 		return m.quit()
 	}
+	return nil
+}
+
+// editLobbySettings opens the host form pre-filled with the running lobby, so
+// the settings can be adjusted without tearing the room down.
+func (m *Model) editLobbySettings() tea.Cmd {
+	if m.session == nil || !m.session.IsHost() {
+		return m.setToast(toastWarn, "Only the host can change the settings")
+	}
+	if m.room.state.Phase == proto.PhaseInGame {
+		return m.setToast(toastWarn, "Settings cannot change during a match")
+	}
+	m.form.editFrom(m.room.state)
+	m.returnTo = screenRoom
+	m.screen = screenHostForm
 	return nil
 }
 
@@ -101,39 +120,69 @@ func (m *Model) viewRoom() string {
 		return m.chrome("lobby", "", m.center(m.style.DimText("leaving"+m.style.Glyphs.Ellipsis), m.bodyHeight()), nil)
 	}
 	st := m.room.state
-	roster := m.rosterPanel()
-	feed := m.feedPanel()
 
-	main := roster
-	// Put the feed beside the roster when there is room, under it when not.
-	if m.width >= 92 {
-		main = lipgloss.JoinHorizontal(lipgloss.Top, roster, "  ", feed)
-	} else {
-		main = lipgloss.JoinVertical(lipgloss.Left, roster, feed)
+	// The countdown owns the screen. Once the match is seconds away the roster
+	// is no longer what anyone is looking at, and leaving it up under a
+	// swelling digit just makes the moment noisy.
+	if st.Phase == proto.PhaseCountdown {
+		return m.chrome("", "", m.center(m.countdownBanner(st.Countdown), m.bodyHeight()), nil)
 	}
 
-	var footer string
-	switch st.Phase {
-	case proto.PhaseCountdown:
-		footer = m.countdownBanner(st.Countdown)
-	default:
-		footer = m.readinessBanner()
-	}
-
-	body := lipgloss.JoinVertical(lipgloss.Center, main, "", footer)
+	body := lipgloss.JoinVertical(lipgloss.Center,
+		m.rosterPanel(),
+		"",
+		m.readinessBanner(),
+	)
 	headline := st.Name + "  " + m.style.Glyphs.Bullet + "  " + m.configSummary(st.Config)
 	return m.chrome("lobby", headline, m.center(body, m.bodyHeight()), m.roomHints())
 }
 
+// viewActivityModal draws the lobby's event feed over the current screen.
+//
+// The feed used to sit permanently beside the roster, where long lines wrapped
+// and were then clipped, and where it took space from the thing people are
+// actually reading. As a dialog it can be as wide as it needs and is only
+// present when someone asks for it.
+func (m *Model) viewActivityModal(frame string) string {
+	events := m.room.state.Events
+	width := min(max(m.width-12, 30), 60)
+
+	visible := max(min(m.height-10, 14), 3)
+	end := max(len(events)-m.modalTop, 0)
+	start := max(end-visible, 0)
+	m.modalTop = min(m.modalTop, max(len(events)-1, 0))
+
+	var rows []string
+	if len(events) == 0 {
+		rows = append(rows, m.style.FaintText("nothing has happened yet"))
+	}
+	for _, e := range events[start:end] {
+		stamp := m.style.FaintText(e.At.Format("15:04:05") + " ")
+		// Wrap rather than clip: a dialog has the room, and a line cut in half
+		// is worse than one that runs on.
+		text := lipgloss.NewStyle().Width(width - 11).Render(m.style.DimText(e.Text))
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, stamp, text))
+	}
+
+	footer := "esc close"
+	if len(events) > visible {
+		footer = fmt.Sprintf("%d of %d  %s  ↑/↓ scroll  %s  esc close",
+			end-start, len(events), m.style.Glyphs.Bullet, m.style.Glyphs.Bullet)
+	}
+	return m.renderModal(frame, "activity", lipgloss.JoinVertical(lipgloss.Left, rows...), footer, width)
+}
+
 // roomHints builds the help bar for the room, which differs for the host.
 func (m *Model) roomHints() []hint {
-	hints := []hint{{"r", "ready"}}
+	hints := []hint{{"r", "ready"}, {"a", "activity"}}
 	if m.session != nil && m.session.IsHost() {
-		hints = append(hints, hint{"↑/↓", "select"}, hint{"x", "remove"}, hint{"esc", "close lobby"})
+		hints = append(hints,
+			hint{"e", "edit settings"}, hint{"↑/↓", "select"},
+			hint{"x", "remove"}, hint{"esc", "close lobby"})
 	} else {
 		hints = append(hints, hint{"esc", "leave"})
 	}
-	return append(hints, hint{"ctrl+l", "logs"}, hint{"q", "quit"})
+	return append(hints, hint{",", "settings"}, hint{"q", "quit"})
 }
 
 // configSummary renders the match settings. The lobby's own name is not
@@ -209,33 +258,6 @@ func (m *Model) rosterPanel() string {
 			append([]string{m.style.Bold(title), ""}, rows...)...))
 }
 
-// feedPanel renders the in-lobby activity feed.
-func (m *Model) feedPanel() string {
-	events := m.room.state.Events
-	const shown = 8
-	if len(events) > shown {
-		events = events[len(events)-shown:]
-	}
-
-	rows := []string{m.style.Bold("activity"), ""}
-	if len(events) == 0 {
-		rows = append(rows, m.style.FaintText("nothing yet"))
-	}
-	for _, e := range events {
-		age := m.now.Sub(e.At)
-		color := m.style.Theme.Dim
-		// Recent lines stay bright and fade back over a few seconds, which
-		// draws the eye to what just happened.
-		if age < 3*time.Second {
-			t := float64(age) / float64(3*time.Second)
-			color = m.style.Theme.Accent.Lerp(m.style.Theme.Dim, t)
-		}
-		stamp := m.style.FaintText(e.At.Format("15:04:05") + " ")
-		rows = append(rows, stamp+m.style.Text(color, truncate(e.Text, 30)))
-	}
-	return m.style.Panel().Width(34).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
-}
-
 // readinessBanner tells the group what is holding the match up.
 func (m *Model) readinessBanner() string {
 	st := m.room.state
@@ -248,7 +270,18 @@ func (m *Model) readinessBanner() string {
 		}
 	}
 	if len(st.Players) == 0 {
-		return m.style.FaintText("waiting for the lobby")
+		return m.style.FaintText("opening the lobby" + m.style.Glyphs.Ellipsis)
+	}
+	// A lobby with only its host is waiting for company, not for a decision.
+	people := 0
+	for _, p := range st.Players {
+		if !p.Bot {
+			people++
+		}
+	}
+	if people == 1 && len(st.Players) == 1 {
+		color := th.Dim.Lerp(th.Accent, m.pulse(2*time.Second))
+		return m.style.Text(color, "waiting for players — press r to start solo, or add bots with e")
 	}
 	if waiting == 0 {
 		return m.style.Text(th.Ok, "everyone is ready")

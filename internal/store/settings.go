@@ -21,6 +21,11 @@ type Settings struct {
 	ColorMode   string     `json:"color_mode,omitempty"`
 	ShowNodeID  bool       `json:"show_node_id,omitempty"`
 	LastConfig  *HostPrefs `json:"last_host_config,omitempty"`
+	// Emoji allows the snail icon where the terminal is known to support it.
+	// Detection still has the final say; this only ever turns it off.
+	Emoji bool `json:"emoji"`
+	// AutoResize lets the app ask the terminal to grow to fit an arena.
+	AutoResize bool `json:"auto_resize"`
 }
 
 // HostPrefs remembers the last lobby a user hosted so the form comes back
@@ -32,6 +37,7 @@ type HostPrefs struct {
 	TickRate     int    `json:"tick_rate"`
 	TicksPerMove int    `json:"ticks_per_move"`
 	MaxPlayers   int    `json:"max_players"`
+	Bots         int    `json:"bots,omitempty"`
 	Wrap         bool   `json:"wrap"`
 	Mode         string `json:"mode"`
 }
@@ -43,6 +49,8 @@ func DefaultSettings() Settings {
 		Theme:      "neon",
 		ColorMode:  "auto",
 		ShowNodeID: true,
+		Emoji:      true,
+		AutoResize: true,
 	}
 }
 

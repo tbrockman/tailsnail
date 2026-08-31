@@ -43,6 +43,7 @@ type options struct {
 	verbose  bool
 	ascii    bool
 	color    string
+	emoji    string
 	version  bool
 }
 
@@ -61,6 +62,7 @@ func run(args []string) error {
 	fs.BoolVar(&opts.verbose, "verbose", false, "also mirror the in-app log to a file in the state directory")
 	fs.BoolVar(&opts.ascii, "ascii", false, "draw with plain ASCII instead of Unicode glyphs")
 	fs.StringVar(&opts.color, "color", "auto", "colour depth: "+strings.Join(theme.ModeNames(), "|"))
+	fs.StringVar(&opts.emoji, "emoji", "auto", "use the snail icon: "+strings.Join(theme.EmojiModeNames(), "|"))
 	fs.BoolVar(&opts.version, "version", false, "print the version and exit")
 	fs.Usage = func() { usage(fs) }
 	if err := fs.Parse(args); err != nil {
@@ -153,10 +155,15 @@ func resolveStateDir(override string) (string, error) {
 func runTUI(opts options) error {
 	// Validate the flags before anything environmental, so a typo reports the
 	// typo rather than whatever else happens to be wrong.
-	colorMode, ok := theme.ParseMode(opts.color)
-	if !ok {
+	colorMode, okColor := theme.ParseMode(opts.color)
+	if !okColor {
 		return fmt.Errorf("unknown --color value %q; expected one of %s",
 			opts.color, strings.Join(theme.ModeNames(), ", "))
+	}
+	emojiMode, ok := theme.ParseEmojiMode(opts.emoji)
+	if !ok {
+		return fmt.Errorf("unknown --emoji value %q; expected one of %s",
+			opts.emoji, strings.Join(theme.EmojiModeNames(), ", "))
 	}
 	// tailsnail is an interactive program and nothing else. Failing early with
 	// an explanation beats emitting escape sequences into a pipe.
@@ -252,6 +259,7 @@ func runTUI(opts options) error {
 		Settings:  settings,
 		ASCIIFlag: opts.ascii,
 		ColorFlag: colorMode,
+		EmojiFlag: emojiMode,
 	}
 
 	program := tea.NewProgram(ui.New(app), tea.WithAltScreen(), tea.WithContext(ctx))
