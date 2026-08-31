@@ -49,6 +49,9 @@ type Client struct {
 	tick     int
 	closeMsg string
 	closeErr error
+	// gen is the settings generation from the most recent roster, echoed back
+	// when readying so a stale decision is refused rather than applied.
+	gen int
 
 	closeOnce sync.Once
 }
@@ -194,7 +197,10 @@ func (c *Client) LobbyID() string { return c.lobbyID }
 
 // SetReady implements Session.
 func (c *Client) SetReady(ready bool) {
-	c.send(proto.KindReady, proto.Ready{Ready: ready})
+	c.mu.Lock()
+	gen := c.gen
+	c.mu.Unlock()
+	c.send(proto.KindReady, proto.Ready{Ready: ready, Gen: gen})
 }
 
 // Input implements Session. The client tick stamp lets the host echo back
@@ -324,6 +330,9 @@ func (c *Client) handle(env proto.Envelope) {
 		if err != nil {
 			return
 		}
+		c.mu.Lock()
+		c.gen = msg.Gen
+		c.mu.Unlock()
 		c.emit(LobbyUpdate{State: msg})
 
 	case proto.KindStart:

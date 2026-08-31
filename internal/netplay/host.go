@@ -50,7 +50,11 @@ type seat struct {
 	id     game.PlayerID
 	player proto.Player
 
-	// conn is nil for the host's own seat, which needs no network.
+	// bot marks a seat the host steers itself.
+	bot bool
+
+	// conn is nil for the host's own seat and for bots, neither of which needs
+	// a network connection.
 	conn *proto.Conn
 	out  chan proto.Envelope
 
@@ -63,7 +67,9 @@ type seat struct {
 	done      chan struct{}
 }
 
-// local reports whether this seat belongs to the host itself.
+// local reports whether the seat has no network connection: the host's own
+// seat, or a bot. Nothing is ever sent to a local seat and its liveness is
+// never in question.
 func (s *seat) local() bool { return s.conn == nil }
 
 // Host runs a lobby and, once started, the authoritative simulation.
@@ -95,10 +101,18 @@ type Host struct {
 	// matchCfg is the config the running match was built with, including the
 	// seed drawn for it. The record has to describe the match that was played,
 	// not the lobby template it came from.
-	matchCfg  game.Config
-	matchID   string
-	startedAt time.Time
-	pending   map[game.PlayerID]pendingInput
+	matchCfg game.Config
+	// matchPlayers is the roster as it stood at kickoff. Results are built
+	// from it rather than from the live seats, so a player who leaves
+	// mid-match still appears in the record they took part in.
+	matchPlayers []proto.Player
+	matchID      string
+	startedAt    time.Time
+	pending      map[game.PlayerID]pendingInput
+
+	// gen increments on every settings change; a ready that quotes an older
+	// generation is stale and is refused.
+	gen int
 
 	countdownEnd time.Time
 	lastCount    int
@@ -154,6 +168,7 @@ func newHost(ctx context.Context, srv *Server, opts HostOptions) (*Host, error) 
 		done:     make(chan struct{}),
 	}}
 	h.note("%s opened the lobby", ident.DisplayName)
+	h.syncBots()
 	h.refreshAdvert()
 
 	h.wg.Add(1)
@@ -189,7 +204,9 @@ func (h *Host) Advert() *proto.Advert {
 
 // SetReady implements Session for the local player.
 func (h *Host) SetReady(ready bool) {
-	h.do(func() { h.setReady(0, ready) })
+	// The host is always looking at the current settings; it is the one
+	// changing them.
+	h.do(func() { h.setReady(0, ready, h.gen) })
 }
 
 // Input implements Session for the local player.
@@ -234,6 +251,11 @@ func (h *Host) do(fn func()) {
 // run is the single goroutine that owns all lobby and simulation state.
 func (h *Host) run() {
 	defer h.wg.Done()
+
+	// Publish the opening roster before anything else. Without it the host
+	// sits on an empty lobby — no seats, no settings — until the first player
+	// joins and something happens to trigger a broadcast.
+	h.broadcastLobby()
 
 	house := time.NewTicker(houseInterval)
 	defer house.Stop()
@@ -375,6 +397,10 @@ func (h *Host) everyoneReady() bool {
 	if len(h.seats) == 0 {
 		return false
 	}
+	// A lobby of nothing but bots has nobody to play it.
+	if h.humanSeats() == 0 {
+		return false
+	}
 	for _, s := range h.seats {
 		if !s.player.Ready {
 			return false
@@ -413,13 +439,14 @@ func (h *Host) startMatch() {
 	}
 	h.sim = sim
 	h.matchCfg = cfg
+	h.matchPlayers = h.playerList()
 	h.matchID = proto.NewMatchID()
 	h.startedAt = time.Now()
 	h.phase = proto.PhaseInGame
 	h.pending = make(map[game.PlayerID]pendingInput)
 	h.refreshAdvert()
 
-	players := h.playerList()
+	players := h.matchPlayers
 	for _, s := range h.seatsSnapshot() {
 		if s.local() {
 			continue
@@ -436,6 +463,16 @@ func (h *Host) startMatch() {
 func (h *Host) tick() {
 	if h.sim == nil {
 		return
+	}
+	// Bots decide from the state as it stands at the top of the tick, before
+	// anyone's input is applied, so they see exactly what a player sees.
+	if bots := h.botSeats(); len(bots) > 0 {
+		state := h.sim.State()
+		for _, s := range bots {
+			if sn := state.SnakeByID(s.id); sn != nil && sn.Alive {
+				h.sim.SetDirection(s.id, game.ChooseDirection(state, h.matchCfg, s.id))
+			}
+		}
 	}
 	for id, in := range h.pending {
 		h.sim.SetDirection(id, in.dir)
@@ -477,7 +514,9 @@ func (h *Host) broadcastState() {
 // endMatch closes out a finished simulation, assembling the result and asking
 // every participant to attest it.
 func (h *Host) endMatch(final game.State) {
-	players := h.playerList()
+	// The record describes the match as it started, so someone who forfeited
+	// part-way through still appears in it with the placement they earned.
+	players := h.matchPlayers
 	h.finalPlayers = players
 	h.phase = proto.PhaseOpen
 	h.clearReady()
@@ -523,7 +562,12 @@ func (h *Host) endMatch(final game.State) {
 // buildResult renders the finished simulation as a canonical match result.
 func (h *Host) buildResult(final game.State, players []proto.Player) proto.MatchResult {
 	byKey := make(map[game.PlayerID]proto.Player, len(players))
+	bots := 0
 	for _, p := range players {
+		if p.Bot {
+			bots++
+			continue
+		}
 		byKey[p.Seat] = p
 	}
 	r := proto.MatchResult{
@@ -535,7 +579,14 @@ func (h *Host) buildResult(final game.State, players []proto.Player) proto.Match
 		EndedAt:    proto.FormatTime(time.Now()),
 		HostPubKey: h.srv.Identity().PubKey(),
 	}
+	// A bot has no key and signs nothing, so it is not a participant. The
+	// count travels in the config instead, which keeps a record with bots in
+	// it from reading as though it were a full field of people.
+	r.Config.Bots = bots
 	for _, p := range players {
+		if p.Bot {
+			continue
+		}
 		r.Participants = append(r.Participants, proto.Participant{
 			PubKey:      p.PubKey,
 			DisplayName: p.DisplayName,
@@ -569,6 +620,9 @@ func (h *Host) buildResult(final game.State, players []proto.Player) proto.Match
 // allSigned reports whether every still-seated participant has attested.
 func (h *Host) allSigned() bool {
 	for _, s := range h.seats {
+		if s.bot {
+			continue // a bot has no key and will never answer
+		}
 		if !s.signed {
 			return false
 		}
@@ -608,7 +662,8 @@ func (h *Host) resetAfterMatch() {
 // clearReady un-readies everyone, which is what a match ending should do.
 func (h *Host) clearReady() {
 	for _, s := range h.seats {
-		s.player.Ready = false
+		// A bot has nothing to decide, so it stays ready.
+		s.player.Ready = s.bot
 	}
 	h.lastCount = 0
 }
@@ -724,6 +779,137 @@ func (h *Host) allocate(conn *proto.Conn, join proto.JoinLobby, hello proto.Hell
 	return s, nil
 }
 
+// syncBots adds or removes bot seats so their number matches the configured
+// count. Bots are seated in the lobby rather than conjured at kickoff, so the
+// roster always shows who is actually going to play and joins are naturally
+// limited to the seats left over.
+func (h *Host) syncBots() {
+	want := h.cfg.Bots
+	if want > h.cfg.MaxPlayers-1 {
+		want = h.cfg.MaxPlayers - 1
+	}
+	if want < 0 {
+		want = 0
+	}
+
+	current := h.botSeats()
+	for len(current) > want {
+		last := current[len(current)-1]
+		h.note("%s left", last.player.DisplayName)
+		h.removeSeat(last.id, "bot removed")
+		current = h.botSeats()
+	}
+	for len(current) < want {
+		if len(h.seats) >= h.cfg.MaxPlayers {
+			break
+		}
+		id := h.freeSeat()
+		s := &seat{
+			id:  id,
+			bot: true,
+			player: proto.Player{
+				Seat:        id,
+				DisplayName: botName(len(current)),
+				Palette:     h.freePalette(),
+				// A bot is always ready; it is never what the lobby waits for.
+				Ready:     true,
+				Bot:       true,
+				Connected: true,
+			},
+			lastSeen: time.Now(),
+			done:     make(chan struct{}),
+		}
+		h.seats = append(h.seats, s)
+		sort.Slice(h.seats, func(i, j int) bool { return h.seats[i].id < h.seats[j].id })
+		h.note("%s joined", s.player.DisplayName)
+		current = h.botSeats()
+	}
+}
+
+// botSeats returns the bot seats in seat order.
+func (h *Host) botSeats() []*seat {
+	var out []*seat
+	for _, s := range h.seats {
+		if s.bot {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// botName labels the nth bot.
+func botName(n int) string { return fmt.Sprintf("bot %d", n+1) }
+
+// humanSeats returns the seats held by people.
+func (h *Host) humanSeats() int {
+	n := 0
+	for _, s := range h.seats {
+		if !s.bot {
+			n++
+		}
+	}
+	return n
+}
+
+// Reconfigure applies new settings to an open lobby, so a host can adjust the
+// arena without tearing the room down and asking everyone to rejoin.
+//
+// Changing the settings un-readies everyone: people agreed to play the old
+// configuration, and starting them on a different one without a fresh ready
+// check would be a surprise.
+func (h *Host) Reconfigure(name string, cfg game.Config) {
+	h.do(func() {
+		if h.phase != proto.PhaseOpen && h.phase != proto.PhaseCountdown {
+			h.note("settings cannot change once a match has started")
+			h.broadcastLobby()
+			return
+		}
+		if err := cfg.Validate(); err != nil {
+			h.note("settings rejected: %v", err)
+			h.broadcastLobby()
+			return
+		}
+		// Seats already taken by people put a floor under the seat count.
+		if humans := h.humanSeats(); cfg.MaxPlayers < humans {
+			cfg.MaxPlayers = humans
+		}
+		if cfg.Bots > cfg.MaxPlayers-1 {
+			cfg.Bots = cfg.MaxPlayers - 1
+		}
+
+		h.cfg = cfg
+		h.gen++
+		if trimmed := proto.SanitizeDisplayName(name); trimmed != "" {
+			h.name = trimmed
+		}
+		h.phase = proto.PhaseOpen
+		h.clearReady()
+		h.syncBots()
+		h.dropSeatsBeyondCapacity()
+		h.note("the host changed the settings")
+		h.refreshAdvert()
+		h.broadcastLobby()
+	})
+}
+
+// dropSeatsBeyondCapacity removes the most recently seated players when the
+// seat count is lowered below the number of people in the room.
+func (h *Host) dropSeatsBeyondCapacity() {
+	for len(h.seats) > h.cfg.MaxPlayers {
+		victim := h.seats[len(h.seats)-1]
+		if victim.player.Host {
+			return // never the host's own seat
+		}
+		h.note("%s was removed: the lobby got smaller", victim.player.DisplayName)
+		if !victim.local() {
+			h.sendTo(victim, proto.KindKick, proto.Kick{
+				Seat: victim.id, Reason: "the host reduced the number of seats",
+			}, false)
+		}
+		h.removeSeat(victim.id, "lobby resized")
+	}
+}
+
 // freeSeat returns the lowest unused seat index.
 func (h *Host) freeSeat() game.PlayerID {
 	used := make(map[game.PlayerID]bool, len(h.seats))
@@ -803,7 +989,7 @@ func (h *Host) handleClient(s *seat, env proto.Envelope) {
 		if err != nil {
 			return
 		}
-		h.setReady(s.id, msg.Ready)
+		h.setReady(s.id, msg.Ready, msg.Gen)
 	case proto.KindInput:
 		msg, err := proto.Decode[proto.Input](env)
 		if err != nil {
@@ -832,9 +1018,20 @@ func (h *Host) handleClient(s *seat, env proto.Envelope) {
 }
 
 // setReady updates a seat's ready flag and broadcasts the change.
-func (h *Host) setReady(id game.PlayerID, ready bool) {
+//
+// gen is the settings generation the player was looking at. A ready that
+// crossed paths with a settings change is dropped, so nobody is committed to a
+// configuration they never saw; the re-broadcast puts them back in sync.
+func (h *Host) setReady(id game.PlayerID, ready bool, gen int) {
 	s := h.seatByID(id)
-	if s == nil || s.player.Ready == ready {
+	if s == nil {
+		return
+	}
+	if gen != h.gen {
+		h.broadcastLobby()
+		return
+	}
+	if s.player.Ready == ready {
 		return
 	}
 	if h.phase != proto.PhaseOpen && h.phase != proto.PhaseCountdown {
@@ -875,13 +1072,26 @@ func (h *Host) addAttestation(s *seat, msg proto.Attestation) {
 }
 
 // removeSeat drops a seat and tears its connection down.
+//
+// Leaving a match in progress forfeits it: the snake is eliminated rather than
+// left to coast, so the board reflects who is actually still playing and the
+// match can reach its end.
 func (h *Host) removeSeat(id game.PlayerID, reason string) {
 	for i, s := range h.seats {
 		if s.id != id {
 			continue
 		}
-		if s.local() {
+		if s.player.Host {
 			return // the host's own seat only goes away with the lobby
+		}
+		if h.sim != nil && h.phase == proto.PhaseInGame {
+			h.sim.Eliminate(id)
+		}
+		if s.local() {
+			// A bot: nothing to disconnect, just take the seat away.
+			h.seats = append(h.seats[:i], h.seats[i+1:]...)
+			h.refreshAdvert()
+			return
 		}
 		h.seats = append(h.seats[:i], h.seats[i+1:]...)
 		h.closeSeat(s)
@@ -972,6 +1182,7 @@ func (h *Host) lobbyState() proto.LobbyState {
 		LobbyID: h.id,
 		Name:    h.name,
 		Config:  h.cfg,
+		Gen:     h.gen,
 		Phase:   h.phase,
 		Players: h.playerList(),
 		Events:  append([]proto.LobbyEvent(nil), h.feed...),
@@ -1027,6 +1238,7 @@ func (h *Host) refreshAdvert() {
 		Config:    h.cfg,
 		Seats:     h.cfg.MaxPlayers,
 		Taken:     len(h.seats),
+		Bots:      len(h.botSeats()),
 		Phase:     h.phase,
 	}
 	h.advertMu.Lock()

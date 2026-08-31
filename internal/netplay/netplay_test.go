@@ -771,3 +771,324 @@ func makeSharedRecord(t *testing.T, a, b *store.Identity) proto.AttestedRecord {
 	}
 	return rec
 }
+
+func TestBotsFillSeatsAndPlay(t *testing.T) {
+	h := newHarness(t, "ada")
+	ctx := context.Background()
+
+	cfg := fastConfig()
+	cfg.MaxPlayers = 4
+	cfg.Bots = 2
+	cfg.Wrap = false
+	host, err := h.server.Host(ctx, HostOptions{Name: "with bots", Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { host.Close("test over") })
+	events := collect(host)
+
+	// The opening roster must already show the host and both bots.
+	first := events.waitFor(t, "the opening roster", 5*time.Second, isType[LobbyUpdate])
+	roster := first.(LobbyUpdate).State
+	if len(roster.Players) != 3 {
+		t.Fatalf("roster has %d players, want the host plus 2 bots", len(roster.Players))
+	}
+	bots := 0
+	for _, p := range roster.Players {
+		if p.Bot {
+			bots++
+			if !p.Ready {
+				t.Errorf("%s is not ready; a bot has nothing to wait for", p.DisplayName)
+			}
+		}
+	}
+	if bots != 2 {
+		t.Fatalf("roster has %d bots, want 2", bots)
+	}
+
+	// The host readying up is enough to start, because the bots already are.
+	host.SetReady(true)
+	events.waitFor(t, "the match to start", 10*time.Second, isType[GameStarted])
+	over := events.waitFor(t, "the match to end", 25*time.Second, isType[MatchOver])
+
+	// Bots must actually have moved rather than sitting still.
+	final := over.(MatchOver).State
+	if len(final.Snakes) != 3 {
+		t.Fatalf("the match had %d snakes, want 3", len(final.Snakes))
+	}
+
+	events.waitFor(t, "the record", 15*time.Second, isType[Attested])
+	recs := h.st.All()
+	if len(recs) != 1 {
+		t.Fatalf("stored %d records, want 1", len(recs))
+	}
+	rec := recs[0]
+	if got := len(rec.Result.Participants); got != 1 {
+		t.Fatalf("record lists %d participants, want only the human", got)
+	}
+	if rec.Result.Config.Bots != 2 {
+		t.Errorf("record says %d bots played, want 2", rec.Result.Config.Bots)
+	}
+	if !rec.FullyAttested() {
+		t.Errorf("record is %s; the only human signed, so it is complete", rec.AttestationSummary())
+	}
+	if err := rec.Verify(); err != nil {
+		t.Errorf("record does not verify: %v", err)
+	}
+}
+
+func TestLobbyOpensWithItsSettingsVisible(t *testing.T) {
+	h := newHarness(t, "ada")
+	cfg := fastConfig()
+	cfg.MaxPlayers = 3
+	host, err := h.server.Host(context.Background(), HostOptions{Name: "visible", Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { host.Close("test over") })
+	events := collect(host)
+
+	// Before anyone joins, the host must already see the room it opened.
+	ev := events.waitFor(t, "the opening roster", 5*time.Second, isType[LobbyUpdate])
+	st := ev.(LobbyUpdate).State
+	if st.Name != "visible" {
+		t.Errorf("lobby name = %q, want %q", st.Name, "visible")
+	}
+	if st.Config.Width != cfg.Width || st.Config.TickRate != cfg.TickRate {
+		t.Errorf("config = %dx%d @%d, want %dx%d @%d",
+			st.Config.Width, st.Config.Height, st.Config.TickRate,
+			cfg.Width, cfg.Height, cfg.TickRate)
+	}
+	if len(st.Players) != 1 || !st.Players[0].Host {
+		t.Fatalf("roster = %+v, want the host seated", st.Players)
+	}
+	if st.Phase != proto.PhaseOpen {
+		t.Errorf("phase = %q, want open", st.Phase)
+	}
+}
+
+func TestHostCanReconfigureAnOpenLobby(t *testing.T) {
+	h := newHarness(t, "ada")
+	j := newJoiner(t, "grace")
+	ctx := context.Background()
+
+	cfg := fastConfig()
+	cfg.MaxPlayers = 4
+	host, err := h.server.Host(ctx, HostOptions{Name: "before", Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { host.Close("test over") })
+	hostEvents := collect(host)
+
+	client, err := j.join(ctx, h.addr, host.LobbyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close("test over") })
+	clientEvents := collect(client)
+
+	hostEvents.waitFor(t, "both seats", 5*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		return ok && len(lu.State.Players) == 2
+	})
+	client.SetReady(true)
+	hostEvents.waitFor(t, "grace to ready up", 5*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		if !ok {
+			return false
+		}
+		for _, p := range lu.State.Players {
+			if p.DisplayName == "grace" && p.Ready {
+				return true
+			}
+		}
+		return false
+	})
+
+	next := cfg
+	next.Width, next.Height = 30, 16
+	next.TickRate = 15
+	next.Mode = game.ModeShrink
+	next.Bots = 1
+	host.Reconfigure("after", next)
+
+	// Both sides must see the new settings.
+	check := func(c *collector, who string) {
+		ev := c.waitFor(t, who+" to see the new settings", 5*time.Second, func(ev Event) bool {
+			lu, ok := ev.(LobbyUpdate)
+			return ok && lu.State.Config.Width == 30 && lu.State.Name == "after"
+		})
+		st := ev.(LobbyUpdate).State
+		if st.Config.TickRate != 15 || st.Config.Mode != game.ModeShrink {
+			t.Errorf("%s sees config %+v", who, st.Config)
+		}
+		if len(st.Players) != 3 {
+			t.Errorf("%s sees %d players, want 2 people plus the new bot", who, len(st.Players))
+		}
+	}
+	check(hostEvents, "the host")
+	check(clientEvents, "the client")
+
+	// Changing the settings must un-ready the people who agreed to the old ones.
+	last, _ := hostEvents.lastLobby()
+	for _, p := range last.Players {
+		if !p.Bot && p.Ready {
+			t.Errorf("%s is still ready after the settings changed", p.DisplayName)
+		}
+	}
+}
+
+func TestReconfigureCannotStrandSeatedPlayers(t *testing.T) {
+	h := newHarness(t, "ada")
+	j := newJoiner(t, "grace")
+	ctx := context.Background()
+
+	cfg := fastConfig()
+	cfg.MaxPlayers = 4
+	host, err := h.server.Host(ctx, HostOptions{Name: "shrinking", Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { host.Close("test over") })
+	events := collect(host)
+
+	client, err := j.join(ctx, h.addr, host.LobbyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close("test over") })
+	events.waitFor(t, "both seats", 5*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		return ok && len(lu.State.Players) == 2
+	})
+
+	// Two people are seated; asking for two seats must keep both.
+	next := cfg
+	next.MaxPlayers = 2
+	host.Reconfigure("shrinking", next)
+
+	events.waitFor(t, "the smaller lobby", 5*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		return ok && lu.State.Config.MaxPlayers == 2
+	})
+	last, _ := events.lastLobby()
+	if len(last.Players) != 2 {
+		t.Fatalf("roster has %d players after resizing to 2 seats, want both kept", len(last.Players))
+	}
+}
+
+func TestLeavingAMatchForfeitsIt(t *testing.T) {
+	h := newHarness(t, "ada")
+	j := newJoiner(t, "grace")
+	ctx := context.Background()
+
+	cfg := fastConfig()
+	cfg.MaxPlayers = 2
+	cfg.Wrap = true // keep the match running until someone leaves
+	host, err := h.server.Host(ctx, HostOptions{Name: "forfeit", Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { host.Close("test over") })
+	events := collect(host)
+
+	client, err := j.join(ctx, h.addr, host.LobbyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events.waitFor(t, "both seats", 5*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		return ok && len(lu.State.Players) == 2
+	})
+	host.SetReady(true)
+	client.SetReady(true)
+	started := events.waitFor(t, "the match to start", 10*time.Second, isType[GameStarted])
+	leaverSeat := game.PlayerID(1)
+	for _, p := range started.(GameStarted).Players {
+		if !p.Host {
+			leaverSeat = p.Seat
+		}
+	}
+
+	// Walking out mid-match forfeits rather than leaving a coasting snake.
+	client.Close("had to go")
+
+	over := events.waitFor(t, "the match to end", 20*time.Second, isType[MatchOver])
+	final := over.(MatchOver).State
+	sn := final.SnakeByID(leaverSeat)
+	if sn == nil {
+		t.Fatal("the leaver's snake vanished from the final state")
+	}
+	if sn.Alive {
+		t.Error("the leaver's snake is still alive")
+	}
+	if sn.Placement == 0 {
+		t.Error("the leaver was not ranked")
+	}
+	if host := final.SnakeByID(0); host == nil || host.Placement != 1 {
+		t.Error("the remaining player did not win")
+	}
+
+	// The record must still name the person who forfeited.
+	events.waitFor(t, "the record", 15*time.Second, isType[Attested])
+	rec := h.st.All()[0]
+	if len(rec.Result.Participants) != 2 {
+		t.Fatalf("record lists %d participants, want both", len(rec.Result.Participants))
+	}
+	if rec.FullyAttested() {
+		t.Error("the record claims a signature from the player who left")
+	}
+}
+
+func TestAReadyThatCrossesASettingsChangeIsRefused(t *testing.T) {
+	h := newHarness(t, "ada")
+	ctx := context.Background()
+
+	cfg := fastConfig()
+	cfg.MaxPlayers = 4
+	host, err := h.server.Host(ctx, HostOptions{Name: "racing", Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { host.Close("test over") })
+	events := collect(host)
+	events.waitFor(t, "the opening roster", 5*time.Second, isType[LobbyUpdate])
+
+	j := newJoiner(t, "grace")
+	client, err := j.join(ctx, h.addr, host.LobbyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close("test over") })
+	events.waitFor(t, "both seats", 5*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		return ok && len(lu.State.Players) == 2
+	})
+
+	// Change the settings, then send a ready quoting the generation from
+	// before the change — exactly what a client that had not yet received the
+	// new roster would do.
+	next := cfg
+	next.TickRate = 30
+	host.Reconfigure("racing", next)
+	events.waitFor(t, "the new settings", 5*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		return ok && lu.State.Config.TickRate == 30
+	})
+
+	if err := client.conn.SendTimeout(3*time.Second, proto.KindReady, proto.Ready{Ready: true, Gen: 0}); err != nil {
+		t.Fatal(err)
+	}
+	// Give the host a moment to process and re-broadcast.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	last, _ := events.lastLobby()
+	for _, p := range last.Players {
+		if p.DisplayName == "grace" && p.Ready {
+			t.Fatal("a ready sent against the old settings was accepted")
+		}
+	}
+}

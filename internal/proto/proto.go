@@ -152,6 +152,7 @@ type Advert struct {
 	Config    game.Config `json:"config"`
 	Seats     int         `json:"seats"`
 	Taken     int         `json:"taken"`
+	Bots      int         `json:"bots,omitempty"`
 	Phase     LobbyPhase  `json:"phase"`
 }
 
@@ -184,6 +185,9 @@ type Player struct {
 	Ready       bool          `json:"ready"`
 	Host        bool          `json:"host"`
 	Connected   bool          `json:"connected"`
+	// Bot marks a seat the host steers. Bots never sign a result, so a match
+	// with bots in it is attested by its people alone.
+	Bot bool `json:"bot,omitempty"`
 }
 
 // LobbyEvent is one line of the in-lobby activity feed.
@@ -194,18 +198,24 @@ type LobbyEvent struct {
 
 // LobbyState is the full roster broadcast after every change.
 type LobbyState struct {
-	LobbyID   string       `json:"lobby_id"`
-	Name      string       `json:"name"`
-	Config    game.Config  `json:"config"`
+	LobbyID string      `json:"lobby_id"`
+	Name    string      `json:"name"`
+	Config  game.Config `json:"config"`
+	// Gen increments every time the host changes the settings. A client echoes
+	// it back when it readies up, so a ready sent while a change was in flight
+	// cannot commit that player to a configuration they never saw.
+	Gen       int          `json:"gen"`
 	Phase     LobbyPhase   `json:"phase"`
 	Players   []Player     `json:"players"`
 	Events    []LobbyEvent `json:"events,omitempty"`
 	Countdown int          `json:"countdown,omitempty"` // seconds remaining
 }
 
-// Ready toggles a seat's ready flag.
+// Ready toggles a seat's ready flag. Gen is the settings generation the
+// player was looking at when they decided.
 type Ready struct {
 	Ready bool `json:"ready"`
+	Gen   int  `json:"gen"`
 }
 
 // Leave announces a voluntary departure.

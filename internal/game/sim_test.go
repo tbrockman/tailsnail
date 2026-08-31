@@ -1,7 +1,9 @@
 package game
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -555,4 +557,41 @@ func hasEvent(events []Event, kind EventKind) bool {
 		}
 	}
 	return false
+}
+
+func TestBotCountIsBoundedBySeats(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxPlayers = 4
+
+	for _, n := range []int{0, 1, 3} {
+		cfg.Bots = n
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("%d bots in a 4-seat lobby was rejected: %v", n, err)
+		}
+	}
+	// A lobby made entirely of bots would have nobody to play it.
+	cfg.Bots = 4
+	if err := cfg.Validate(); err == nil {
+		t.Error("a lobby with no room for a human was accepted")
+	}
+	cfg.Bots = -1
+	if err := cfg.Validate(); err == nil {
+		t.Error("a negative bot count was accepted")
+	}
+}
+
+func TestBotsDoNotChangeAnExistingRecordsCanonicalForm(t *testing.T) {
+	// Bots is omitempty precisely so that adding the field leaves the hash of
+	// every already-stored bot-free match untouched.
+	cfg := DefaultConfig()
+	if cfg.Bots != 0 {
+		t.Fatal("the default config should have no bots")
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "bots") {
+		t.Errorf("a bot-free config still serialises the field: %s", raw)
+	}
 }

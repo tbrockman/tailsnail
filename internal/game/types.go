@@ -131,6 +131,15 @@ type Config struct {
 	FoodCount    int    `json:"food_count"`
 	ShrinkEvery  int    `json:"shrink_every"` // moves between shrink steps (ModeShrink)
 	Seed         int64  `json:"seed"`
+
+	// Bots is how many seats the host fills with computer players. The
+	// simulation itself knows nothing about it — bots are ordinary snakes that
+	// the host steers — but it belongs with the rest of the match
+	// configuration, and it is recorded so a result reads honestly.
+	//
+	// It is omitempty so that a match without bots canonicalises exactly as it
+	// did before the field existed, leaving already-stored record hashes valid.
+	Bots int `json:"bots,omitempty"`
 }
 
 // DefaultConfig returns the configuration the host form starts from.
@@ -168,6 +177,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("food count %d out of range 1..16", c.FoodCount)
 	case c.Mode == ModeShrink && (c.ShrinkEvery < 5 || c.ShrinkEvery > 500):
 		return fmt.Errorf("shrink interval %d out of range 5..500", c.ShrinkEvery)
+	case c.Bots < 0 || c.Bots > c.MaxPlayers-1:
+		return fmt.Errorf("bot count %d out of range 0..%d", c.Bots, c.MaxPlayers-1)
 	}
 	return nil
 }
