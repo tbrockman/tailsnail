@@ -265,7 +265,10 @@ the roster with each player's colour and glyph, and toggle ready. **The match
 starts automatically once every seated player is ready**, after an animated
 3-2-1. Readying up alone is a legitimate practice mode.
 
-Two modes:
+**Themes are a viewer setting, modes are a host setting.** A theme only changes
+how your own terminal draws the game, so it lives in settings and every player
+picks their own; the gameplay variant changes what the simulation does, so it
+belongs to the host's lobby configuration. Two modes:
 
 - **classic** — fixed arena, last snake standing wins.
 - **shrinking** — the arena contracts by one ring every *N* moves, forcing
