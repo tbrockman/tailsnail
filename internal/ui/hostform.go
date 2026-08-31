@@ -415,8 +415,9 @@ func (m *Model) viewForm() string {
 // arena they are configuring, rather than letting them find out at kickoff.
 func (m *Model) sizeAdvice() string {
 	th := m.style.Theme
-	needW := m.form.cfg.Width + 4
-	needH := m.form.cfg.Height + 10
+	// Quote the same figure the game screen will demand, sized for a full
+	// lobby since that is when the scoreboard is tallest.
+	needW, needH := arenaViewport(m.form.cfg, m.form.cfg.MaxPlayers)
 	fits := m.width >= needW && m.height >= needH
 
 	text := fmt.Sprintf("needs a %d×%d terminal; yours is %d×%d", needW, needH, m.width, m.height)

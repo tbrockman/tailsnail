@@ -102,10 +102,14 @@ const (
 // tooltip is a description anchored to a specific point in the frame.
 type tooltip struct {
 	text string
-	// row is the frame row of the text being described, and col the column
-	// just past its last character. The popover attaches there rather than to
-	// the container's edge, the way a tooltip attaches to the element it
-	// belongs to and not to the page.
+	// row is the frame row of the text being described, and col the column it
+	// attaches at: just past the text for a placement beside it, or the point
+	// the notch marks for one above or below. The popover attaches to the text
+	// rather than to the container's edge, the way a tooltip attaches to the
+	// element it belongs to and not to the page.
+	//
+	// A full-width table row has no meaningful "end", so those anchor at the
+	// column their content starts in, and the box hangs beneath aligned to it.
 	row, col int
 	// prefer is where to try first. Whatever is asked for, the box falls back
 	// through the other placements until one fits the space actually
@@ -115,12 +119,13 @@ type tooltip struct {
 }
 
 // Popover sizing. The box is never narrower than minimum — below that a
-// description wraps into unreadable slivers — and never wider than preferred.
+// description wraps into unreadable slivers — and never wider than maximum,
+// which is about as long a line as stays comfortable to read.
 const (
-	tipChrome    = 4 // the box's own border and padding
-	tipGap       = 1 // the pointer
-	tipPreferred = 30
-	tipMinimum   = 14
+	tipChrome  = 4 // the box's own border and padding
+	tipGap     = 1 // the pointer
+	tipMaximum = 46
+	tipMinimum = 14
 )
 
 // fallbackOrder returns the placements to try, starting from the preferred
@@ -188,7 +193,11 @@ func (m *Model) placeTooltip(frame string, lines []string, frameWidth int, tip t
 	default:
 		budget = frameWidth - tipChrome - 2
 	}
-	width := min(budget, tipPreferred)
+	// Take only as much width as the text actually wants. Sizing every
+	// popover to a fixed figure wrapped short text that had room to sit on
+	// one line.
+	want := naturalWidth(strings.Split(tip.text, "\n"))
+	width := min(budget, min(max(want, tipMinimum), tipMaximum))
 	if width < tipMinimum {
 		return "", false
 	}

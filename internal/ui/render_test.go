@@ -354,7 +354,7 @@ func TestHostFormWarnsWhenTheArenaWillNotFit(t *testing.T) {
 	m.form.cfg.Width, m.form.cfg.Height = 120, 48
 
 	plain := stripANSI(m.View())
-	if !strings.Contains(plain, "needs a 124×58 terminal") {
+	if !strings.Contains(plain, "needs a 124×56 terminal") {
 		t.Errorf("the form does not warn about the terminal size:\n%s", plain)
 	}
 }
@@ -1729,5 +1729,105 @@ func TestBrowserPeerDetailIsAPopover(t *testing.T) {
 	}
 	if !strings.Contains(plain, "grace-laptop.tail1234.ts.net") {
 		t.Error("the peer's full DNS name is missing from the detail")
+	}
+}
+
+func TestTheFormPromisesExactlyWhatTheGameDemands(t *testing.T) {
+	// If the form quotes a different figure from the one the resize overlay
+	// checks, a player sizes their terminal to what they were told and is then
+	// shown the overlay anyway.
+	sizes := []struct{ w, h int }{
+		{game.MinWidth, game.MinHeight}, {40, 20}, {60, 20}, {98, 40},
+		{game.MaxWidth, game.MaxHeight},
+	}
+	for _, size := range sizes {
+		for _, seats := range []int{2, 4, game.MaxPlayers} {
+			cfg := game.DefaultConfig()
+			cfg.Width, cfg.Height, cfg.MaxPlayers = size.w, size.h, seats
+
+			m := newTestModel(t)
+			m.screen = screenHostForm
+			m.form.cfg = cfg
+			m.width, m.height = 200, 80
+			advice := stripANSI(m.sizeAdvice())
+
+			wantW, wantH := arenaViewport(cfg, seats)
+			if !strings.Contains(advice, fmt.Sprintf("%d×%d", wantW, wantH)) {
+				t.Errorf("%dx%d, %d seats: advice %q does not quote %d×%d",
+					size.w, size.h, seats, advice, wantW, wantH)
+			}
+
+			// And a terminal of exactly that size must actually render.
+			g := gameFixture(t, seats, cfg)
+			g.width, g.height = wantW, wantH
+			if strings.Contains(stripANSI(g.View()), "too small") {
+				t.Errorf("%dx%d, %d seats: %d×%d was promised but shows the resize overlay",
+					size.w, size.h, seats, wantW, wantH)
+			}
+			checkFrame(t, g, "arena at the promised size", g.View())
+		}
+	}
+}
+
+func TestTableDetailHangsFromTheLeftOfItsRow(t *testing.T) {
+	// A full-width row has no meaningful right-hand end to attach to, so the
+	// detail sits under the start of the row rather than out at the far edge.
+	build := func(t *testing.T) *Model {
+		m := newTestModel(t)
+		m.width, m.height = 110, 26
+		m.node = runningNode()
+		return m
+	}
+
+	t.Run("lobby browser", func(t *testing.T) {
+		m := build(t)
+		m.screen = screenBrowser
+		cfg := game.DefaultConfig()
+		m.browser.snapshot = discovery.Snapshot{At: time.Now(), Candidates: 2, Peers: []discovery.Peer{
+			{NodeID: "n1", DNSName: "grace-laptop.tail1234.ts.net", Short: "grace-laptop",
+				DisplayName: "grace", Login: "grace@example.com", LastSeen: time.Now(),
+				Advert: &proto.Advert{LobbyID: "l1", Name: "friday night", Config: cfg,
+					Seats: 4, Taken: 2, Phase: proto.PhaseOpen}},
+		}}
+		assertHangsLeft(t, m, "grace-laptop.tail1234.ts.net")
+	})
+
+	t.Run("match list", func(t *testing.T) {
+		m := build(t)
+		for range 3 {
+			if _, err := m.app.Store.Put(signedRecord(t, m, 3, 3)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		m.history.reload(m.app.Store)
+		m.screen = screenHistory
+		m.history.tab = tabMatches
+		assertHangsLeft(t, m, "40×20 classic")
+	})
+}
+
+// assertHangsLeft checks that the popover box starts near the left edge rather
+// than out at the end of the row, and that the wanted text is not wrapped.
+func assertHangsLeft(t *testing.T, m *Model, want string) {
+	t.Helper()
+	view := stripANSI(m.View())
+	checkFrame(t, m, "table detail", m.View())
+
+	boxLeft := -1
+	for _, line := range strings.Split(view, "\n") {
+		if i := strings.Index(line, "╭"); i >= 0 {
+			boxLeft = ansi.StringWidth(line[:i])
+			break
+		}
+	}
+	if boxLeft < 0 {
+		t.Fatalf("no popover was drawn:\n%s", view)
+	}
+	if boxLeft > 8 {
+		t.Errorf("the detail box starts at column %d, want it under the start of the row:\n%s", boxLeft, view)
+	}
+	// With the box given room, text that fits on one line must not be wrapped.
+	if !strings.Contains(view, want) {
+		t.Errorf("%q was wrapped or is missing:\n%s", want, view)
 	}
 }

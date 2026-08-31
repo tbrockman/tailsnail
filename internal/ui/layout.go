@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/theolol/tailsnail/internal/game"
 	"github.com/theolol/tailsnail/internal/tsnode"
 	"github.com/theolol/tailsnail/internal/ui/theme"
 )
@@ -163,6 +164,19 @@ func (m *Model) center(body string, height int) string {
 	return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, body)
 }
 
+// arenaViewport is the terminal size a match on the given configuration needs.
+//
+// The host form and the resize overlay both quote it, so what the form
+// promises is exactly what the game screen will go on to demand.
+func arenaViewport(cfg game.Config, players int) (int, int) {
+	// The arena plus its frame, and either side of the panel.
+	w := max(minWidth, cfg.Width+4)
+	// The arena and its frame, the scoreboard — whose height depends on how
+	// many entries fit across this width — and the chrome.
+	h := max(minHeight, cfg.Height+2+hudRowsAt(players, w)+chromeRows)
+	return w, h
+}
+
 // chromeRows is what the frame spends on everything but the body: two lines of
 // header, one reserved for a notice, and two of help bar.
 const chromeRows = 5
@@ -246,21 +260,14 @@ func (m *Model) resizeOverlay() (string, bool) {
 
 // requiredSize is the viewport the current screen needs.
 func (m *Model) requiredSize() (int, int) {
-	w, h := minWidth, minHeight
 	// Only the arena itself needs room for the grid; the results dialog is
 	// panel-sized and must not inherit that requirement.
 	if m.screen == screenGame {
-		aw, ah := m.game.arenaCells()
-		if aw > 0 {
-			w = max(w, aw+4)
-			// The arena and its frame, the scoreboard — whose height depends on
-			// how many players fit across this width — the two-line header, the
-			// two-line help bar, and one line held back for a toast.
-			chrome := hudRowsAt(len(m.game.players), w) + 7
-			h = max(h, ah+chrome)
+		if aw, _ := m.game.arenaCells(); aw > 0 {
+			return arenaViewport(m.game.cfg, len(m.game.players))
 		}
 	}
-	return w, h
+	return minWidth, minHeight
 }
 
 // --- log overlay ----------------------------------------------------------

@@ -141,9 +141,11 @@ func (m *Model) viewBrowser() string {
 	// The table is left-aligned directly under the two-line header.
 	const bodyTop = 2
 	return m.withTooltip(frame, tooltip{
-		text:   anchor.text,
-		row:    bodyTop + anchor.row,
-		col:    anchor.col + 1,
+		text: anchor.text,
+		row:  bodyTop + anchor.row,
+		// The anchor is already the column the row's content starts in, so it
+		// is used as-is: the notch lands under the row's first character.
+		col:    anchor.col,
 		prefer: placeBelow,
 	})
 }
@@ -240,7 +242,9 @@ func (m *Model) browserTable(rows []discovery.Peer) (string, rowAnchor) {
 			m.style.DimText(pad(seats, 8)) +
 			state
 		if selected {
-			anchor = rowAnchor{row: len(out), col: ansi.StringWidth(line), text: m.peerDetail(p)}
+			// Anchored at the start of the row, not its end: the detail
+			// hangs underneath aligned with the row it belongs to.
+			anchor = rowAnchor{row: len(out), col: rowContentColumn, text: m.peerDetail(p)}
 		}
 		out = append(out, line)
 	}

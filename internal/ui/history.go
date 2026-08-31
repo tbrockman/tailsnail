@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theolol/tailsnail/internal/proto"
 	"github.com/theolol/tailsnail/internal/store"
@@ -21,6 +20,10 @@ const (
 	tabLeaderboard historyTab = iota
 	tabMatches
 )
+
+// rowContentColumn is where a table row's text begins, past the two-cell
+// selection marker.
+const rowContentColumn = 2
 
 // rowAnchor is where a table's selected row ended up, so a popover can attach
 // to it after the table has been composed.
@@ -119,7 +122,9 @@ func (m *Model) viewHistory() string {
 	return m.withTooltip(frame, tooltip{
 		text: anchor.text,
 		row:  bodyTop + anchor.row,
-		col:  anchor.col + 1,
+		// The anchor is already the column the row's content starts in, so it
+		// is used as-is: the notch lands under the row's first character.
+		col: anchor.col,
 		// A row's extra detail reads naturally hanging under it, and there is
 		// rarely room beside a full-width table anyway.
 		prefer: placeBelow,
@@ -192,7 +197,7 @@ func (m *Model) leaderboardTable() (string, rowAnchor) {
 			}
 			anchor = rowAnchor{
 				row:  len(rows),
-				col:  ansi.StringWidth(row),
+				col:  rowContentColumn,
 				text: detail + "key " + proto.ShortKey(ps.PubKey),
 			}
 		}
@@ -246,7 +251,7 @@ func (m *Model) matchTable() (string, rowAnchor) {
 			m.style.DimText(pad(fmt.Sprintf("%d", len(rec.Result.Participants)), 9)) +
 			status
 		if i == m.history.cursor {
-			anchor = rowAnchor{row: len(rows), col: ansi.StringWidth(row), text: m.matchDetail(rec)}
+			anchor = rowAnchor{row: len(rows), col: rowContentColumn, text: m.matchDetail(rec)}
 		}
 		rows = append(rows, row)
 	}
