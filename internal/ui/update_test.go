@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -656,4 +657,263 @@ func indexOf(haystack, needle string) int {
 		}
 	}
 	return -1
+}
+
+func TestTheJoiningMarkerIsClearedWhenTheAttemptSettles(t *testing.T) {
+	// The marker used to be set and never cleared, so a lobby went on reading
+	// "joining" long after the attempt had finished.
+	for _, tc := range []struct {
+		name string
+		msg  sessionReadyMsg
+	}{
+		{"success", sessionReadyMsg{session: &recordingSession{}}},
+		{"failure", sessionReadyMsg{err: proto.ErrorMsg{Code: proto.ErrLobbyFull}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			m.screen = screenBrowser
+			m.browser.joining = "peer-1"
+
+			m = send(t, m, tc.msg)
+			if m.browser.joining != "" {
+				t.Fatalf("the joining marker survived a %s: %q", tc.name, m.browser.joining)
+			}
+		})
+	}
+}
+
+func TestHostCanOpenLobbySettingsAndApplyThem(t *testing.T) {
+	m, sess := sessionModel(t, true)
+	m.room.apply(sampleLobby(proto.PhaseOpen, 2))
+
+	m = send(t, m, press("e"))
+	if m.screen != screenHostForm {
+		t.Fatalf("screen = %v after pressing e, want the settings form", m.screen)
+	}
+	if !m.form.editing {
+		t.Fatal("the form is not in edit mode")
+	}
+	if m.form.cfg.Width != m.room.state.Config.Width {
+		t.Error("the form was not pre-filled from the running lobby")
+	}
+
+	m.form.cursor = 1 // arena width
+	m = send(t, m, press("right"))
+	m = send(t, m, press("enter"))
+
+	if len(sess.reconfigs) != 1 {
+		t.Fatalf("Reconfigure was called %d times, want 1", len(sess.reconfigs))
+	}
+	if sess.reconfigs[0].Width == m.room.state.Config.Width {
+		t.Error("the edited width was not sent")
+	}
+	if m.screen != screenRoom {
+		t.Errorf("screen = %v after applying, want the lobby room", m.screen)
+	}
+	if m.form.editing {
+		t.Error("the form is still in edit mode")
+	}
+}
+
+func TestCancellingLobbySettingsChangesNothing(t *testing.T) {
+	m, sess := sessionModel(t, true)
+	m.room.apply(sampleLobby(proto.PhaseOpen, 2))
+	m.returnTo = screenRoom
+
+	m = send(t, m, press("e"))
+	m.form.cursor = 1
+	m = send(t, m, press("right"))
+	m = send(t, m, press("esc"))
+
+	if len(sess.reconfigs) != 0 {
+		t.Fatal("cancelling still pushed the settings")
+	}
+	if m.form.editing {
+		t.Error("the form is still in edit mode after cancelling")
+	}
+	if m.screen != screenRoom {
+		t.Errorf("screen = %v after cancelling, want the lobby room", m.screen)
+	}
+}
+
+func TestAClientCannotOpenLobbySettings(t *testing.T) {
+	m, sess := sessionModel(t, false)
+	m = send(t, m, press("e"))
+	if m.screen == screenHostForm {
+		t.Fatal("a client was given the host's settings form")
+	}
+	if len(sess.reconfigs) != 0 {
+		t.Fatal("a client pushed a reconfigure")
+	}
+	if !m.toast.active(m.now) {
+		t.Error("the refusal was not explained")
+	}
+}
+
+func TestLobbySettingsAreRefusedDuringAMatch(t *testing.T) {
+	m, _ := sessionModel(t, true)
+	lobby := sampleLobby(proto.PhaseInGame, 2)
+	m.room.apply(lobby)
+
+	m = send(t, m, press("e"))
+	if m.screen == screenHostForm {
+		t.Fatal("the settings form opened during a match")
+	}
+	if !m.toast.active(m.now) {
+		t.Error("the refusal was not explained")
+	}
+}
+
+func TestActivityDialogTogglesFromTheRoom(t *testing.T) {
+	m, _ := sessionModel(t, false)
+
+	m = send(t, m, press("a"))
+	if m.modal != modalActivity {
+		t.Fatal("the activity dialog did not open")
+	}
+	// Its own key closes it again, as does escape.
+	m = send(t, m, press("a"))
+	if m.modal != modalNone {
+		t.Fatal("pressing the activity key again did not close it")
+	}
+	m = send(t, m, press("a"))
+	m = send(t, m, press("esc"))
+	if m.modal != modalNone {
+		t.Fatal("escape did not close the activity dialog")
+	}
+}
+
+func TestTheActivityDialogSwallowsInput(t *testing.T) {
+	m, sess := sessionModel(t, false)
+	m = send(t, m, press("a"))
+
+	// Ready must not fire while the dialog is up.
+	m = send(t, m, press("r"))
+	if len(sess.ready) != 0 {
+		t.Error("input reached the room while the activity dialog was open")
+	}
+	m = send(t, m, press("down"))
+	if m.modalTop != 0 {
+		t.Errorf("modalTop = %d after scrolling down at the newest entry", m.modalTop)
+	}
+	m = send(t, m, press("up"))
+	if m.modalTop != 1 {
+		t.Errorf("modalTop = %d, want the dialog to have scrolled", m.modalTop)
+	}
+}
+
+func TestSnakeSpeedArrowsReadAsSpeed(t *testing.T) {
+	m := newTestModel(t)
+	m.screen = screenHostForm
+	// Find the speed field rather than hard-coding its position.
+	for i, f := range m.form.fields {
+		if f.label == "snake speed" {
+			m.form.cursor = i
+		}
+	}
+	cellsPerSecond := func() float64 {
+		return float64(m.form.cfg.TickRate) / float64(m.form.cfg.TicksPerMove)
+	}
+
+	before := cellsPerSecond()
+	m = send(t, m, press("right"))
+	if cellsPerSecond() <= before {
+		t.Errorf("right made the snake slower: %.1f then %.1f", before, cellsPerSecond())
+	}
+	m = send(t, m, press("left"))
+	m = send(t, m, press("left"))
+	if cellsPerSecond() >= before {
+		t.Errorf("left made the snake faster: %.1f then %.1f", before, cellsPerSecond())
+	}
+}
+
+func TestLoweringSeatsPullsTheBotCountDownWithIt(t *testing.T) {
+	m := newTestModel(t)
+	m.screen = screenHostForm
+
+	var seatField, botField int
+	for i, f := range m.form.fields {
+		switch f.label {
+		case "max players":
+			seatField = i
+		case "bots":
+			botField = i
+		}
+	}
+	// Fill the lobby with bots, then shrink it.
+	m.form.cursor = seatField
+	for range 10 {
+		m = send(t, m, press("right"))
+	}
+	m.form.cursor = botField
+	for range 10 {
+		m = send(t, m, press("right"))
+	}
+	if m.form.cfg.Bots != m.form.cfg.MaxPlayers-1 {
+		t.Fatalf("bots = %d, want one short of the %d seats", m.form.cfg.Bots, m.form.cfg.MaxPlayers)
+	}
+
+	m.form.cursor = seatField
+	for range 10 {
+		m = send(t, m, press("left"))
+	}
+	if m.form.cfg.Bots > m.form.cfg.MaxPlayers-1 {
+		t.Errorf("bots = %d with only %d seats", m.form.cfg.Bots, m.form.cfg.MaxPlayers)
+	}
+	if err := m.form.cfg.Validate(); err != nil {
+		t.Errorf("the form produced an invalid config: %v", err)
+	}
+}
+
+func TestStartingAMatchAsksTheTerminalToFit(t *testing.T) {
+	m, _ := sessionModel(t, true)
+	m.width, m.height = 62, 20
+	m.app.Settings.AutoResize = true
+
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height = 90, 34
+	m = send(t, m, sessionEventMsg{gen: 1, ev: netplay.GameStarted{
+		Config: cfg, Seat: 0, Players: samplePlayers(2),
+	}})
+
+	if m.pendingResize == [2]int{} {
+		t.Fatal("no resize was requested for an arena larger than the window")
+	}
+	if m.pendingResize[0] < cfg.Width || m.pendingResize[1] < cfg.Height {
+		t.Errorf("requested %v, too small for a %dx%d arena", m.pendingResize, cfg.Width, cfg.Height)
+	}
+	// The request rides out with the frame and is not repeated.
+	view := m.View()
+	if !strings.Contains(view, "\x1b[8;") {
+		t.Error("the resize request did not reach the frame")
+	}
+	if strings.Contains(m.View(), "\x1b[8;") {
+		t.Error("the resize request was sent more than once")
+	}
+}
+
+func TestAutoResizeCanBeTurnedOff(t *testing.T) {
+	m, _ := sessionModel(t, true)
+	m.width, m.height = 62, 20
+	m.app.Settings.AutoResize = false
+
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height = 90, 34
+	m = send(t, m, sessionEventMsg{gen: 1, ev: netplay.GameStarted{
+		Config: cfg, Seat: 0, Players: samplePlayers(2),
+	}})
+	if m.pendingResize != [2]int{} {
+		t.Fatal("a resize was requested with the preference turned off")
+	}
+}
+
+func TestResizeOnlyEverGrowsTheWindow(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 200, 60
+	m.app.Settings.AutoResize = true
+
+	m.requestResize(80, 24)
+	if m.pendingResize != [2]int{} {
+		t.Fatalf("requested %v; shrinking somebody's terminal is not ours to do", m.pendingResize)
+	}
 }

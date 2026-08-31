@@ -34,7 +34,8 @@ tailsnail  │  lobby   friday night  •  40×20  wrap  20 ticks/s  classic    
   candidate; the ones that answer a tailsnail handshake show up in the lobby
   browser within a couple of seconds.
 - **Runs host-authoritative matches** for two to eight players, with two
-  gameplay modes and configurable arena, speed and wrap-around.
+  gameplay modes and configurable arena, speed and wrap-around. Seats can be
+  filled with bots, so a lobby is playable without waiting for anybody.
 - **Signs and gossips results.** Every participant signs the final standings,
   and peers sync each other's match history whenever they connect — so a
   leaderboard assembles itself with no central store.
@@ -72,10 +73,19 @@ tsnail history export --json   print stored match records as JSON
   -verbose             also mirror the in-app log to a file in the state directory
   -ascii               draw with plain ASCII instead of Unicode glyphs
   -color string        colour depth: auto|truecolor|256|16|none (default "auto")
+  -emoji string        use the snail icon: auto|on|off (default "auto")
   -version             print the version and exit
 ```
 
+Keys that work everywhere: `,` opens settings, `ctrl+l` shows the captured
+log, `q` quits. Each screen's help bar lists the rest.
+
 `NO_COLOR` is honoured and overrides `--color`.
+
+Emoji detection is a heuristic — there is no capability query for it — so
+`auto` requires a UTF-8 locale *and* a terminal known to render emoji at the
+width it advertises. Anything unrecognised gets no icon, because a
+mis-measured cell shears every column after it. `--emoji=on` forces it.
 
 ## First run, step by step
 
@@ -204,8 +214,8 @@ gossip  → Hello/HelloOK, then anti-entropy
 |---|---|---|
 | `hello` / `hello_ok` | both | Handshake: app, protocol version, signing key, display name, lobby advert |
 | `join_lobby` / `join_ok` | client → host | Take a seat; the host assigns a seat index and palette slot |
-| `lobby_state` | host → clients | Full roster, phase, config, activity feed, countdown |
-| `ready` | client → host | Toggle ready |
+| `lobby_state` | host → clients | Full roster, phase, config, settings generation, activity feed, countdown |
+| `ready` | client → host | Toggle ready, quoting the settings generation it was decided under |
 | `leave` / `kick` | both | Voluntary departure; host-initiated removal |
 | `start` | host → clients | Match beginning, with config, roster and your seat |
 | `input` | client → host | A heading change plus a client tick stamp |
@@ -249,6 +259,11 @@ drawn, because a snake briefly shown through a wall reads as a bug.
   the arena and roster so the table can see it is on rails.
 - Silent for 10 seconds and the seat is eliminated and dropped.
 - A client that reconnects within the window is picked straight back up.
+- **Leaving a match in progress forfeits it**: the snake is eliminated rather
+  than left coasting, so the board reflects who is still playing. Results are
+  built from the roster as it stood at kickoff, so someone who walks out still
+  appears in the record with the placement they earned — unsigned, which is
+  what makes the record partially attested.
 - A slow client loses tick frames rather than stalling the match; each client
   has its own writer goroutine and a bounded outbox.
 
@@ -259,11 +274,27 @@ large amount of machinery for a case where someone can simply open a new lobby.
 
 ## Lobbies and gameplay
 
-A host configures grid size, tick rate, snake speed (ticks per move), seats
-(2–8), wrap-around, food count, and mode. Players join from the browser, see
-the roster with each player's colour and glyph, and toggle ready. **The match
+A host configures grid size, tick rate, snake speed, seats (2–8), bots,
+wrap-around, food count, and mode. Players join from the browser, see the
+roster with each player's colour and glyph, and toggle ready. **The match
 starts automatically once every seated player is ready**, after an animated
 3-2-1. Readying up alone is a legitimate practice mode.
+
+The host can change a running lobby's settings in place with `e`, without
+tearing the room down. Doing so un-readies everyone, since they agreed to the
+previous configuration — and a ready that crossed paths with a change is
+refused rather than applied, so nobody is committed to settings they never
+saw.
+
+**Bots** fill seats with computer players, which is how you play alone or test
+a change. They are seated in the lobby rather than conjured at kickoff, so the
+roster shows who will actually play and joins are limited to the seats left
+over. A bot is always ready and never holds a lobby up; a lobby of nothing but
+bots cannot start. The policy is deliberately simple and readable rather than
+strong: avoid the fatal move, prefer not to meet another head, then head for
+the nearest pellet, then keep options open. Bots have no signing key, so they
+are not participants in a match record — the count is recorded in the config
+instead, so a result never reads as a full field of people.
 
 **Themes are a viewer setting, modes are a host setting.** A theme only changes
 how your own terminal draws the game, so it lives in settings and every player
@@ -337,10 +368,21 @@ people running the app.
 ## Interface
 
 Screens: onboarding, menu, lobby browser, host form, lobby room, arena,
-results, history and leaderboard, settings, and a debug log overlay.
+results, history and leaderboard, settings, plus an activity dialog and a
+debug log overlay. Settings are reachable from any of them with `,`; enter
+saves and escape discards, and because theme and glyph changes apply live so
+they can be judged, discarding actively restores the previous look.
 
-Animation is driven by a 60fps frame ticker that is independent of the
-simulation tick rate — a 10-tick-per-second match still shimmers smoothly.
+Field descriptions are drawn as a popover beside the panel, with a pointer
+tying it to its row, rather than inline underneath the selection. An inline
+description changes the panel's height as the selection moves, so every row
+below it shifts by a line on each keypress — which makes a list impossible to
+scan. Every field is guaranteed exactly one row: a value too long to fit is
+trimmed rather than wrapped.
+
+Animation is driven by a 60fps frame ticker off the wall clock, independent of
+the simulation tick rate — a 10-tick-per-second match shimmers at the same
+speed as a 60-tick one, because decoration should not change with the rules.
 Snake tails carry a static head-to-tail gradient plus a travelling brightness
 wave, so a live snake visibly flows and reads differently from a wall. Food
 pulses through four glyphs and a brightness cycle in step. Deaths leave a
@@ -368,7 +410,11 @@ and a TUI of this kind is not usefully screen-reader accessible.
 **Layout** degrades rather than corrupting: a window too small for the current
 screen gets an overlay stating the required and current size, which itself
 scales down to a two-line form and finally to bare dimensions, so it fits any
-window it is describing.
+window it is describing. When a match starts, tailsnail also asks the terminal
+to grow to fit the arena (XTWINOPS `CSI 8 ; rows ; cols t`). Emulators that do
+not implement it ignore the request, so this is a convenience rather than
+something the layout depends on; it only ever grows a window, never shrinks
+one, and it can be turned off in settings.
 
 ## Testing
 
@@ -399,7 +445,11 @@ go test ./...
   backoff, netmap-triggered re-probes, pruning, ordering, and concurrency
   bounds.
 - `internal/ui` — every screen rendered across both themes, both glyph sets and
-  all four colour depths, asserting no frame exceeds its viewport.
+  all four colour depths, asserting no frame exceeds its viewport; that field
+  rows never shift as the selection moves; that overlays splice styled and
+  double-width content without shearing; and the update path — screen flow
+  through a match, stale session generations, join success and failure, and
+  settings save versus discard.
 
 TUI behaviour and tsnet integration are exercised manually; there is no
 network test harness for Tailscale itself.

@@ -689,7 +689,9 @@ func (m *Model) View() string {
 		return ""
 	}
 	if body, tooSmall := m.resizeOverlay(); tooSmall {
-		return body
+		// The request still has to go out here — this is precisely the case it
+		// exists for, and returning early swallowed it.
+		return m.prefixResize(body)
 	}
 	if m.showLog {
 		return m.prefixResize(m.viewLogOverlay())
