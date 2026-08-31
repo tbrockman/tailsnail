@@ -371,7 +371,35 @@ func (m *Model) frameArena(buf []cell, w, h int, st game.State) string {
 	return b.String()
 }
 
+// hudCellWidth is the fixed width of one scoreboard entry. Fixing it lets the
+// HUD pack into a predictable number of rows, which requiredSize needs in
+// order to reserve the right amount of vertical space.
+const hudCellWidth = 20
+
+// hudColumnsAt is how many scoreboard entries fit across a given width.
+func hudColumnsAt(width int) int {
+	return max(width/hudCellWidth, 1)
+}
+
+// hudRowsAt is how many rows the scoreboard occupies for n players at a given
+// width. It takes the width explicitly because requiredSize must evaluate it
+// at the width it is about to demand, not the current one — otherwise
+// shrinking the window to exactly the required width could raise the required
+// height, and the resize overlay would oscillate.
+func hudRowsAt(n, width int) int {
+	if n <= 0 {
+		return 0
+	}
+	cols := hudColumnsAt(width)
+	return (n + cols - 1) / cols
+}
+
 // renderHUD draws the per-player scoreboard above the arena.
+//
+// Entries are packed into fixed-width cells and wrapped explicitly rather than
+// being left to the layout: eight players on a narrow terminal would otherwise
+// soft-wrap into however many lines they happened to need, and push the arena
+// off the bottom of the screen.
 func (m *Model) renderHUD(st game.State) string {
 	g := m.style.Glyphs
 	th := m.style.Theme
@@ -404,9 +432,17 @@ func (m *Model) renderHUD(st game.State) string {
 		if sn.Kills > 0 && sn.Alive {
 			suffix += fmt.Sprintf(" %s%d", g.Cross, sn.Kills)
 		}
-		cells = append(cells, m.style.Text(color, glyph+" "+truncate(name, 12)+suffix))
+
+		// Trim the name, not the statistics: the numbers are why the HUD exists.
+		budget := hudCellWidth - 2 - lipgloss.Width(suffix) - 1
+		text := glyph + " " + truncate(name, max(budget, 3)) + suffix
+		cells = append(cells, m.style.Text(color, pad(text, hudCellWidth-1)))
 	}
 
-	sep := m.style.FaintText("   ")
-	return strings.Join(cells, sep)
+	cols := hudColumnsAt(m.width)
+	var rows []string
+	for i := 0; i < len(cells); i += cols {
+		rows = append(rows, strings.Join(cells[i:min(i+cols, len(cells))], " "))
+	}
+	return strings.Join(rows, "\n")
 }

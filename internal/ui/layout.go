@@ -255,9 +255,12 @@ func (m *Model) requiredSize() (int, int) {
 	if m.screen == screenGame {
 		aw, ah := m.game.arenaCells()
 		if aw > 0 {
-			// Arena plus its frame, plus the header, HUD, roster and help bar.
 			w = max(w, aw+4)
-			h = max(h, ah+10)
+			// The arena and its frame, the scoreboard — whose height depends on
+			// how many players fit across this width — the two-line header, the
+			// two-line help bar, and one line held back for a toast.
+			chrome := hudRowsAt(len(m.game.players), w) + 7
+			h = max(h, ah+chrome)
 		}
 	}
 	return w, h

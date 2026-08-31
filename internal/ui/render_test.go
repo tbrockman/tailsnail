@@ -494,6 +494,33 @@ func TestGameArenaHasExactlyTheConfiguredRows(t *testing.T) {
 	}
 }
 
+func TestGameFitsAtExactlyTheSizeItAsksFor(t *testing.T) {
+	// requiredSize gates the resize overlay. If a frame overflows at exactly
+	// that size, the overlay would hand control back to a layout that then
+	// shears — so the boundary itself has to be correct.
+	sizes := []struct{ w, h int }{
+		{game.MinWidth, game.MinHeight},
+		{40, 20},
+		{80, 30},
+		{game.MaxWidth, game.MaxHeight},
+	}
+	for _, size := range sizes {
+		cfg := game.DefaultConfig()
+		cfg.Width, cfg.Height = size.w, size.h
+		m := gameFixture(t, game.MaxPlayers, cfg)
+
+		needW, needH := m.requiredSize()
+		m.width, m.height = needW, needH
+
+		view := m.View()
+		if strings.Contains(stripANSI(view), "too small") {
+			t.Fatalf("%dx%d arena: the overlay fired at the size requiredSize asked for (%dx%d)",
+				size.w, size.h, needW, needH)
+		}
+		checkFrame(t, m, fmt.Sprintf("game at exactly %dx%d", needW, needH), view)
+	}
+}
+
 func TestGameRendersEveryPlayerCount(t *testing.T) {
 	for n := 1; n <= game.MaxPlayers; n++ {
 		cfg := game.DefaultConfig()
