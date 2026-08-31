@@ -45,17 +45,28 @@ func (c *Conn) Close() error {
 	return err
 }
 
-// Send marshals body and writes it as a framed message of the given kind.
-func (c *Conn) Send(kind Kind, body any) error {
+// NewEnvelope marshals body into an envelope of the given kind. Callers that
+// fan one message out to several connections build it once and hand the result
+// to SendEnvelope, rather than re-encoding per recipient.
+func NewEnvelope(kind Kind, body any) (Envelope, error) {
 	var raw json.RawMessage
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("proto: encoding %s body: %w", kind, err)
+			return Envelope{}, fmt.Errorf("proto: encoding %s body: %w", kind, err)
 		}
 		raw = b
 	}
-	return c.SendEnvelope(Envelope{V: Version, Kind: kind, Body: raw})
+	return Envelope{V: Version, Kind: kind, Body: raw}, nil
+}
+
+// Send marshals body and writes it as a framed message of the given kind.
+func (c *Conn) Send(kind Kind, body any) error {
+	env, err := NewEnvelope(kind, body)
+	if err != nil {
+		return err
+	}
+	return c.SendEnvelope(env)
 }
 
 // SendEnvelope writes a pre-built envelope.
