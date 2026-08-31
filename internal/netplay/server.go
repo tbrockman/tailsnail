@@ -2,7 +2,6 @@ package netplay
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -294,15 +293,36 @@ func (s *Server) Host(ctx context.Context, opts HostOptions) (*Host, error) {
 	return h, nil
 }
 
-// StopHosting closes the current lobby, if any.
+// StopHosting closes the current lobby, if any. It returns immediately; use
+// Shutdown when it matters that the close has actually gone out.
 func (s *Server) StopHosting(reason string) {
 	if h := s.currentHost(); h != nil {
 		h.Close(reason)
 	}
 }
 
-// ErrNotHosting is returned when an operation needs a lobby and there is none.
-var ErrNotHosting = errors.New("netplay: not hosting a lobby")
+// Shutdown closes the current lobby and waits, briefly, for it to flush.
+//
+// Without the wait, quitting drops the sockets and every client reports "the
+// host went away" instead of the reason the host actually gave. The wait is
+// bounded because a wedged client must not be able to hold the process open.
+func (s *Server) Shutdown(reason string) {
+	h := s.currentHost()
+	if h == nil {
+		return
+	}
+	h.Close(reason)
+
+	done := make(chan struct{})
+	go func() { defer close(done); h.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(shutdownGrace):
+	}
+}
+
+// shutdownGrace bounds how long quitting waits for a lobby to close cleanly.
+const shutdownGrace = 2 * time.Second
 
 // Dial opens a connection to a peer's control port over the tailnet.
 func (s *Server) Dial(ctx context.Context, addr string) (net.Conn, error) {

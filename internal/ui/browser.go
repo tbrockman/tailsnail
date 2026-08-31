@@ -12,6 +12,7 @@ import (
 
 	"github.com/theolol/tailsnail/internal/discovery"
 	"github.com/theolol/tailsnail/internal/netplay"
+	"github.com/theolol/tailsnail/internal/proto"
 )
 
 // browserState holds the lobby browser's view of discovery.
@@ -81,7 +82,7 @@ func (m *Model) joinSelected() tea.Cmd {
 	}
 	if !peer.Advert.Joinable() {
 		reason := "that lobby is full"
-		if peer.Advert.Phase != "open" {
+		if peer.Advert.Phase != proto.PhaseOpen {
 			reason = "that game is already under way"
 		}
 		return m.setToast(toastWarn, "%s", capitalise(reason))
@@ -199,7 +200,7 @@ func (m *Model) browserTable(rows []discovery.Peer) string {
 			arena = fmt.Sprintf("%d×%d %s", a.Config.Width, a.Config.Height, a.Config.Mode)
 			seats = fmt.Sprintf("%d/%d", a.Taken, a.Seats)
 			switch {
-			case a.Phase == "in_game":
+			case a.Phase == proto.PhaseInGame:
 				state = m.style.Text(th.Warn, "in game")
 			case a.Taken >= a.Seats:
 				state = m.style.Text(th.Warn, "full")

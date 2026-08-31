@@ -47,10 +47,10 @@ type Client struct {
 	lastSeen time.Time
 	matchID  string
 	tick     int
+	closeMsg string
+	closeErr error
 
-	closeOnce  sync.Once
-	finishOnce sync.Once
-	closeMsg   string
+	closeOnce sync.Once
 }
 
 // JoinOptions configures a join attempt.
@@ -213,18 +213,15 @@ func (c *Client) Kick(game.PlayerID) {}
 
 // Close implements Session, leaving the lobby.
 func (c *Client) Close(reason string) {
+	c.setReason(reason, nil)
 	c.closeOnce.Do(func() {
-		c.closeMsg = reason
 		// Best-effort courtesy so the host frees the seat immediately rather
-		// than waiting for the liveness timer.
+		// than waiting for the liveness timer to notice.
 		c.conn.SendTimeout(time.Second, proto.KindLeave, proto.Leave{Reason: reason})
 		c.cancel()
 		c.conn.Close()
 	})
 }
-
-// Wait blocks until the client's goroutines have finished.
-func (c *Client) Wait() { c.wg.Wait() }
 
 // send writes a message, giving up rather than blocking the UI goroutine.
 func (c *Client) send(kind proto.Kind, body any) {
@@ -251,7 +248,7 @@ func (c *Client) pingLoop() {
 			silence := now.Sub(c.lastSeen)
 			c.mu.Unlock()
 			if silence > hostSilenceTimeout {
-				c.fail("the host stopped responding", nil)
+				c.shutdown("the host stopped responding", nil)
 				return
 			}
 			c.send(proto.KindPing, proto.Ping{Nonce: now.UnixNano()})
@@ -260,18 +257,22 @@ func (c *Client) pingLoop() {
 }
 
 // readLoop consumes messages from the host until the connection ends.
+//
+// It is the sole owner of the event channel: every event is emitted here, and
+// the channel is closed here when the loop exits. Nothing else sends or closes,
+// so a shutdown racing an in-flight event is not possible.
 func (c *Client) readLoop() {
 	defer c.wg.Done()
+	defer c.closeStream()
+
 	for {
 		env, err := c.conn.Recv()
 		if err != nil {
-			if c.ctx.Err() != nil {
-				c.finish(c.closeMsg, nil)
-			} else {
+			if c.ctx.Err() == nil {
 				// A host that dies mid-match takes the match with it. There is
 				// deliberately no host migration: the clients return to the
 				// browser and someone else opens a lobby.
-				c.fail("the host went away", err)
+				c.setReason("the host went away", err)
 			}
 			return
 		}
@@ -280,6 +281,39 @@ func (c *Client) readLoop() {
 		c.mu.Unlock()
 		c.handle(env)
 	}
+}
+
+// closeStream emits the terminal event and closes the channel. It runs only on
+// the readLoop goroutine, as that loop unwinds.
+func (c *Client) closeStream() {
+	c.mu.Lock()
+	reason, err := c.closeMsg, c.closeErr
+	c.mu.Unlock()
+	if reason == "" {
+		reason = "disconnected"
+	}
+	c.events <- SessionClosed{Reason: reason, Err: err}
+	close(c.events)
+}
+
+// setReason records why the session is ending, keeping the first explanation:
+// the original cause is more useful than the disconnect it goes on to produce.
+func (c *Client) setReason(reason string, err error) {
+	c.mu.Lock()
+	if c.closeMsg == "" {
+		c.closeMsg, c.closeErr = reason, err
+	}
+	c.mu.Unlock()
+}
+
+// shutdown records a reason and tears the connection down, which makes readLoop
+// unwind and emit the terminal event.
+func (c *Client) shutdown(reason string, err error) {
+	c.setReason(reason, err)
+	c.closeOnce.Do(func() {
+		c.cancel()
+		c.conn.Close()
+	})
 }
 
 // handle dispatches one message from the host.
@@ -339,14 +373,14 @@ func (c *Client) handle(env proto.Envelope) {
 		if err != nil {
 			return
 		}
-		c.finish(firstNonEmpty(msg.Reason, "removed by the host"), nil)
+		c.shutdown(firstNonEmpty(msg.Reason, "removed by the host"), nil)
 
 	case proto.KindError:
 		msg, err := proto.Decode[proto.ErrorMsg](env)
 		if err != nil {
 			return
 		}
-		c.finish(msg.Message, msg)
+		c.shutdown(msg.Message, msg)
 
 	case proto.KindPing:
 		msg, err := proto.Decode[proto.Ping](env)
@@ -399,52 +433,29 @@ func (c *Client) storeRecord(rec proto.AttestedRecord) {
 	c.emit(Attested{Record: rec})
 }
 
-// fail ends the session because something broke.
-func (c *Client) fail(reason string, err error) {
-	c.closeOnce.Do(func() {
-		c.closeMsg = reason
-		c.cancel()
-		c.conn.Close()
-	})
-	c.finish(reason, err)
-}
-
-// finish emits the terminal event exactly once and closes the event channel.
-func (c *Client) finish(reason string, err error) {
-	c.closeOnce.Do(func() {
-		c.closeMsg = reason
-		c.cancel()
-		c.conn.Close()
-	})
-	c.finishOnce.Do(func() {
-		if reason == "" {
-			reason = "disconnected"
-		}
-		c.emit(SessionClosed{Reason: reason, Err: err})
-		close(c.events)
-	})
-}
-
-// emit hands an event to the UI, dropping stale ticks if it falls behind.
+// emit hands an event to the UI, dropping a stale tick if it falls behind.
+// Only readLoop calls it, so it never races the channel's close.
 func (c *Client) emit(ev Event) {
-	defer func() {
-		// The event channel closes when the session ends; a send racing that
-		// close is expected and is not worth taking the process down for.
-		_ = recover()
-	}()
 	select {
 	case c.events <- ev:
 		return
 	default:
 	}
+	// Tick states are complete snapshots, so discarding an old one to make room
+	// costs nothing. Anything else has to wait for the UI to catch up.
 	if _, isTick := ev.(Tick); isTick {
 		select {
 		case <-c.events:
 		default:
 		}
+		select {
+		case c.events <- ev:
+		default:
+		}
+		return
 	}
 	select {
 	case c.events <- ev:
-	default:
+	case <-c.ctx.Done():
 	}
 }

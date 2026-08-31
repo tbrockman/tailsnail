@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -254,9 +253,6 @@ func (n *Node) WhoIs(ctx context.Context, remoteAddr string) (*apitype.WhoIsResp
 func (n *Node) NetStatus(ctx context.Context) (*ipnstate.Status, error) {
 	return n.lc.Status(ctx)
 }
-
-// TailscaleIPs returns this node's addresses.
-func (n *Node) TailscaleIPs() (v4, v6 netip.Addr) { return n.srv.TailscaleIPs() }
 
 // Relogin restarts the interactive login flow, used when a node key expires
 // or the user asks to re-authenticate from the settings screen.

@@ -274,8 +274,9 @@ func runTUI(opts options) error {
 	}
 
 	// Shut the network down before returning so no listener or session is left
-	// half-open behind the restored terminal.
-	server.StopHosting("the host quit")
+	// half-open behind the restored terminal, and so any clients are told why
+	// the lobby went away rather than just seeing the socket drop.
+	server.Shutdown("the host quit")
 	cancel()
 	return nil
 }

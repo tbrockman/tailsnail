@@ -21,7 +21,7 @@
           inherit version;
           src = pkgs.lib.cleanSource ./.;
 
-          vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+          vendorHash = "sha256-5LLAEt/48QFiBRINkXOxB0erSNmWSvz+gz22Hdnchrk=";
 
           subPackages = [ "cmd/tsnail" ];
 

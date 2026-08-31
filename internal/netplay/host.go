@@ -88,10 +88,14 @@ type Host struct {
 	advert   proto.Advert
 
 	// Everything below is owned by the run goroutine.
-	seats     []*seat
-	phase     proto.LobbyPhase
-	feed      []proto.LobbyEvent
-	sim       *game.Sim
+	seats []*seat
+	phase proto.LobbyPhase
+	feed  []proto.LobbyEvent
+	sim   *game.Sim
+	// matchCfg is the config the running match was built with, including the
+	// seed drawn for it. The record has to describe the match that was played,
+	// not the lobby template it came from.
+	matchCfg  game.Config
 	matchID   string
 	startedAt time.Time
 	pending   map[game.PlayerID]pendingInput
@@ -279,7 +283,7 @@ func (h *Host) shutdown() {
 	}
 	h.phase = proto.PhaseClosed
 	h.refreshAdvert()
-	for _, s := range h.seats {
+	for _, s := range h.seatsSnapshot() {
 		if s.local() {
 			continue
 		}
@@ -298,7 +302,7 @@ func (h *Host) housekeeping() {
 
 	if now.Sub(h.lastPing) >= heartbeatInterval {
 		h.lastPing = now
-		for _, s := range h.seats {
+		for _, s := range h.seatsSnapshot() {
 			if !s.local() {
 				h.sendTo(s, proto.KindPing, proto.Ping{Nonce: now.UnixNano()}, true)
 			}
@@ -340,7 +344,7 @@ func (h *Host) housekeeping() {
 // checkLiveness marks quiet clients as coasting and eliminates the ones that
 // have gone entirely.
 func (h *Host) checkLiveness(now time.Time) {
-	for _, s := range h.seats {
+	for _, s := range h.seatsSnapshot() {
 		if s.local() {
 			continue
 		}
@@ -408,6 +412,7 @@ func (h *Host) startMatch() {
 		return
 	}
 	h.sim = sim
+	h.matchCfg = cfg
 	h.matchID = proto.NewMatchID()
 	h.startedAt = time.Now()
 	h.phase = proto.PhaseInGame
@@ -415,7 +420,7 @@ func (h *Host) startMatch() {
 	h.refreshAdvert()
 
 	players := h.playerList()
-	for _, s := range h.seats {
+	for _, s := range h.seatsSnapshot() {
 		if s.local() {
 			continue
 		}
@@ -442,7 +447,7 @@ func (h *Host) tick() {
 
 	state := h.sim.Step()
 	h.emit(Tick{State: state})
-	for _, s := range h.seats {
+	for _, s := range h.seatsSnapshot() {
 		if s.local() {
 			continue
 		}
@@ -462,7 +467,7 @@ func (h *Host) broadcastState() {
 	}
 	state := h.sim.State()
 	h.emit(Tick{State: state})
-	for _, s := range h.seats {
+	for _, s := range h.seatsSnapshot() {
 		if !s.local() {
 			h.sendTo(s, proto.KindTickState, proto.TickState{State: state, AckTick: s.lastInput}, true)
 		}
@@ -478,7 +483,7 @@ func (h *Host) endMatch(final game.State) {
 	h.clearReady()
 	h.refreshAdvert()
 
-	for _, s := range h.seats {
+	for _, s := range h.seatsSnapshot() {
 		if !s.local() {
 			h.sendTo(s, proto.KindGameOver, proto.GameOver{State: final}, false)
 		}
@@ -504,7 +509,7 @@ func (h *Host) endMatch(final game.State) {
 		s.signed = true
 	}
 
-	for _, s := range h.seats {
+	for _, s := range h.seatsSnapshot() {
 		if s.local() {
 			continue
 		}
@@ -525,7 +530,7 @@ func (h *Host) buildResult(final game.State, players []proto.Player) proto.Match
 		Version:    proto.MatchResultVersion,
 		MatchID:    h.matchID,
 		LobbyName:  h.name,
-		Config:     h.cfg,
+		Config:     h.matchCfg,
 		StartedAt:  proto.FormatTime(h.startedAt),
 		EndedAt:    proto.FormatTime(time.Now()),
 		HostPubKey: h.srv.Identity().PubKey(),
@@ -581,7 +586,7 @@ func (h *Host) finalizeRecord() {
 	if _, err := h.srv.Store().Put(rec); err != nil {
 		h.srv.Log().Logf("netplay: storing match record: %v", err)
 	}
-	for _, s := range h.seats {
+	for _, s := range h.seatsSnapshot() {
 		if !s.local() {
 			h.sendTo(s, proto.KindAttestedRecord, proto.AttestedRecordMsg{Record: rec}, false)
 		}
@@ -954,7 +959,7 @@ func (h *Host) sendTo(s *seat, kind proto.Kind, body any, droppable bool) {
 func (h *Host) broadcastLobby() {
 	state := h.lobbyState()
 	h.emit(LobbyUpdate{State: state})
-	for _, s := range h.seats {
+	for _, s := range h.seatsSnapshot() {
 		if !s.local() {
 			h.sendTo(s, proto.KindLobbyState, state, false)
 		}
@@ -984,6 +989,14 @@ func (h *Host) playerList() []proto.Player {
 		out = append(out, s.player)
 	}
 	return out
+}
+
+// seatsSnapshot copies the seat list. Any loop that might remove a seat — and
+// a non-droppable send can, when a client is too far behind — must walk a copy:
+// removeSeat shifts the backing array in place, so mutating the slice a range
+// is walking would silently skip or revisit seats.
+func (h *Host) seatsSnapshot() []*seat {
+	return append([]*seat(nil), h.seats...)
 }
 
 // seatByID finds a seat.

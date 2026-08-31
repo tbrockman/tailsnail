@@ -361,14 +361,23 @@ func (p *Prober) due(cands []candidate, force bool) []candidate {
 
 // probe handshakes with one candidate and folds the result into the cache.
 func (p *Prober) probe(ctx context.Context, c candidate) {
+	// The entry has to exist before the handshake, because the handshake may
+	// run an opportunistic gossip round and that round reads the entry to
+	// decide whether this peer is due one.
+	p.mu.Lock()
+	if _, ok := p.cache[c.nodeID]; !ok {
+		p.cache[c.nodeID] = &entry{quietFor: QuietTTL}
+	}
+	p.mu.Unlock()
+
 	start := time.Now()
 	hello, err := p.handshake(ctx, c)
 
 	p.mu.Lock()
-	e, ok := p.cache[c.nodeID]
-	if !ok {
-		e = &entry{quietFor: QuietTTL}
-		p.cache[c.nodeID] = e
+	e := p.cache[c.nodeID]
+	if e == nil { // pruned mid-probe because the peer left the netmap
+		p.mu.Unlock()
+		return
 	}
 	e.lastProbe = time.Now()
 	if err != nil {
@@ -455,8 +464,10 @@ func (p *Prober) maybeGossip(ctx context.Context, c candidate, conn *proto.Conn)
 	}
 	p.mu.Lock()
 	e, ok := p.cache[c.nodeID]
-	due := !ok || time.Since(e.lastGossip) >= GossipInterval
-	if due && ok {
+	due := ok && time.Since(e.lastGossip) >= GossipInterval
+	if due {
+		// Stamp before the exchange, not after, so a slow round cannot let a
+		// concurrent sweep start a second one against the same peer.
 		e.lastGossip = time.Now()
 	}
 	p.mu.Unlock()
@@ -472,11 +483,6 @@ func (p *Prober) maybeGossip(ctx context.Context, c candidate, conn *proto.Conn)
 	if !res.Empty() {
 		p.log.Logf("discovery: gossip with %s: %s", c.dnsName, res)
 	}
-	p.mu.Lock()
-	if e, ok := p.cache[c.nodeID]; ok {
-		e.lastGossip = time.Now()
-	}
-	p.mu.Unlock()
 }
 
 // freshPeers returns the cached peers that answered recently enough to still

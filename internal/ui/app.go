@@ -17,6 +17,7 @@ import (
 	"github.com/theolol/tailsnail/internal/discovery"
 	"github.com/theolol/tailsnail/internal/logring"
 	"github.com/theolol/tailsnail/internal/netplay"
+	"github.com/theolol/tailsnail/internal/proto"
 	"github.com/theolol/tailsnail/internal/store"
 	"github.com/theolol/tailsnail/internal/tsnode"
 	"github.com/theolol/tailsnail/internal/ui/theme"
@@ -28,6 +29,16 @@ const frameInterval = 16 * time.Millisecond
 
 // toastDuration is how long a transient notice stays on screen.
 const toastDuration = 4 * time.Second
+
+// Fallback viewport, used when the terminal does not report its size. A pty
+// with no window size set — some CI shells, some multiplexer edge cases —
+// reports 0×0, and rendering nothing there is indistinguishable from a hang.
+// Assuming a conventional 80×24 gets a usable screen up; if the real terminal
+// is smaller, the resize overlay says so.
+const (
+	fallbackWidth  = 80
+	fallbackHeight = 24
+)
 
 // screen identifies the view currently in front of the user.
 type screen int
@@ -118,6 +129,8 @@ func New(app *App) *Model {
 		screen:   screenOnboarding,
 		returnTo: screenMenu,
 		now:      time.Now(),
+		width:    fallbackWidth,
+		height:   fallbackHeight,
 	}
 	m.initMenu()
 	m.initForm()
@@ -204,7 +217,14 @@ func waitSession(gen int, ch <-chan netplay.Event) tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
+		// Keep the last known good size when the terminal reports nothing,
+		// rather than collapsing to an unrenderable zero.
+		if msg.Width > 0 {
+			m.width = msg.Width
+		}
+		if msg.Height > 0 {
+			m.height = msg.Height
+		}
 		return m, nil
 
 	case frameMsg:
@@ -361,11 +381,11 @@ func (m *Model) handleSessionEvent(ev netplay.Event) tea.Cmd {
 	switch e := ev.(type) {
 	case netplay.LobbyUpdate:
 		m.room.apply(e.State)
-		if m.screen == screenGame && e.State.Phase != "in_game" {
-			// The host reset the lobby after a match; follow it back.
-			if m.screen != screenGameOver {
-				m.screen = screenRoom
-			}
+		// The host reopens the lobby after a match. Normally MatchOver has
+		// already moved us to the results; this catches a match that ended
+		// without one, so the arena is not left on screen indefinitely.
+		if m.screen == screenGame && e.State.Phase != proto.PhaseInGame {
+			m.screen = screenRoom
 		}
 	case netplay.GameStarted:
 		m.game.start(e, m.now)
@@ -522,8 +542,10 @@ func (m *Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	if m.width == 0 || m.height == 0 {
-		return "" // the first frame arrives before the size does
+	if m.width <= 0 || m.height <= 0 {
+		// Unreachable via Update, which never stores a non-positive size; this
+		// only guards a directly constructed model.
+		return ""
 	}
 	if body, tooSmall := m.resizeOverlay(); tooSmall {
 		return body

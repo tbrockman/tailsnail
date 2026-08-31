@@ -250,7 +250,9 @@ func (m *Model) resizeOverlay() (string, bool) {
 // requiredSize is the viewport the current screen needs.
 func (m *Model) requiredSize() (int, int) {
 	w, h := minWidth, minHeight
-	if m.screen == screenGame || m.screen == screenGameOver {
+	// Only the arena itself needs room for the grid; the results dialog is
+	// panel-sized and must not inherit that requirement.
+	if m.screen == screenGame {
 		aw, ah := m.game.arenaCells()
 		if aw > 0 {
 			// Arena plus its frame, plus the header, HUD, roster and help bar.

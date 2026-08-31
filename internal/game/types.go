@@ -175,10 +175,6 @@ func (c Config) Validate() error {
 // ErrNoPlayers is returned by New when asked to simulate an empty match.
 var ErrNoPlayers = errors.New("game: no players")
 
-// MoveInterval returns the wall-clock duration between snake moves expressed
-// in ticks; callers combine it with TickRate for a real duration.
-func (c Config) MoveInterval() int { return c.TicksPerMove }
-
 // Snake is one player's serpent plus its per-match statistics.
 type Snake struct {
 	ID   PlayerID  `json:"id"`

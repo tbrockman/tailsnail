@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/theolol/tailsnail/internal/discovery"
@@ -903,11 +904,32 @@ func TestViewIsStableAcrossAnimationFrames(t *testing.T) {
 	}
 }
 
-func TestViewBeforeTheFirstWindowSizeIsEmpty(t *testing.T) {
-	m := newTestModel(t)
-	m.width, m.height = 0, 0
-	if got := m.View(); got != "" {
-		t.Errorf("View() = %q before a size is known, want empty", got)
+func TestATerminalThatReportsNoSizeStillRenders(t *testing.T) {
+	// A pty with no window size set reports 0×0. Falling back to a
+	// conventional viewport keeps a usable screen up; rendering nothing would
+	// be indistinguishable from a hang.
+	m := New(&App{
+		Ctx: context.Background(), Store: newTestModel(t).app.Store,
+		Ident: newTestModel(t).app.Ident, Log: logring.New(16),
+		Settings: store.DefaultSettings(), ColorFlag: theme.ModeTrueColor,
+	})
+	m.screen = screenMenu
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 0, Height: 0})
+	m = updated.(*Model)
+	if m.width != fallbackWidth || m.height != fallbackHeight {
+		t.Fatalf("viewport = %dx%d, want the %dx%d fallback", m.width, m.height, fallbackWidth, fallbackHeight)
+	}
+	if strings.TrimSpace(stripANSI(m.View())) == "" {
+		t.Fatal("a terminal reporting no size produced a blank screen")
+	}
+	checkFrame(t, m, "fallback viewport", m.View())
+
+	// A real size must then take over.
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(*Model)
+	if m.width != 120 || m.height != 40 {
+		t.Fatalf("viewport = %dx%d, want 120x40", m.width, m.height)
 	}
 }
 
