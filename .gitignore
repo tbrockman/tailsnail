@@ -1,0 +1,11 @@
+# Build output
+/tsnail
+/result
+/result-*
+
+# Local state a dev run creates
+/.tsnail-state/
+
+# Editor and OS noise
+.DS_Store
+*.swp
