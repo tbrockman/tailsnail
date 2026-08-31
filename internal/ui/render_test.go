@@ -1359,3 +1359,32 @@ func TestEveryFieldOccupiesExactlyOneRow(t *testing.T) {
 		})
 	}
 }
+
+func TestAPeerIsOnlyMarkedJoiningWhileAJoinIsInFlight(t *testing.T) {
+	m := newTestModel(t)
+	m.node = runningNode()
+	m.screen = screenBrowser
+	cfg := game.DefaultConfig()
+	adv := &proto.Advert{LobbyID: "l1", Name: "open lobby", Config: cfg, Seats: 4, Taken: 1, Phase: proto.PhaseOpen}
+
+	// A peer whose node ID is empty must not collide with the "nothing in
+	// flight" sentinel.
+	m.browser.snapshot = discovery.Snapshot{At: time.Now(), Candidates: 1, Peers: []discovery.Peer{
+		{NodeID: "", DNSName: "grace.ts.net", Short: "grace", DisplayName: "grace",
+			LastSeen: time.Now(), Advert: adv},
+	}}
+	plain := stripANSI(m.View())
+	if strings.Contains(plain, "joining") {
+		t.Errorf("a lobby nobody is joining reads as joining:\n%s", plain)
+	}
+	if !strings.Contains(plain, "open") {
+		t.Errorf("an open lobby is not shown as open:\n%s", plain)
+	}
+
+	// And a peer that is genuinely being joined does say so.
+	m.browser.snapshot.Peers[0].NodeID = "peer-1"
+	m.browser.joining = "peer-1"
+	if !strings.Contains(stripANSI(m.View()), "joining") {
+		t.Error("a join in flight is not shown")
+	}
+}

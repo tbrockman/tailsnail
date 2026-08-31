@@ -210,7 +210,10 @@ func (m *Model) browserTable(rows []discovery.Peer) string {
 				state = m.style.Text(th.Ok, "open")
 			}
 		}
-		if m.browser.joining == p.NodeID {
+		// The empty string is the sentinel for "no join in flight", so it must
+		// not be allowed to match a peer whose node ID came through empty —
+		// that peer would read as "joining" forever.
+		if m.browser.joining != "" && m.browser.joining == p.NodeID {
 			state = m.style.Accent(g.Spin(m.phase(600*time.Millisecond)) + " joining")
 		}
 
