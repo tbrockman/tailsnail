@@ -44,20 +44,12 @@ func (m *Model) chrome(title, subtitle, body string, hints []hint) string {
 	header := m.header(title, subtitle)
 	help := m.helpBar(hints)
 
-	reserved := lipgloss.Height(header) + lipgloss.Height(help)
-	if t := m.toastLine(); t != "" {
-		reserved += lipgloss.Height(t)
-	}
-	bodyHeight := max(m.height-reserved, 1)
+	// The notice line is always present, empty or not. Adding a line only
+	// when there is something to say would push every screen up and down as
+	// notices come and go.
+	bodyBox := lipgloss.NewStyle().Width(m.width).Height(m.bodyHeight()).Render(body)
 
-	bodyBox := lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Render(body)
-
-	parts := []string{header, bodyBox}
-	if t := m.toastLine(); t != "" {
-		parts = append(parts, t)
-	}
-	parts = append(parts, help)
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return lipgloss.JoinVertical(lipgloss.Left, header, bodyBox, m.toastLine(), help)
 }
 
 // header renders the title bar: the wordmark, the screen title, and the node
@@ -70,10 +62,7 @@ func (m *Model) header(title, subtitle string) string {
 	th := m.style.Theme
 	g := m.style.Glyphs
 
-	wordmark := "tailsnail"
-	if icon := m.style.Glyphs.Logo; icon != "" {
-		wordmark = icon + " " + wordmark
-	}
+	wordmark := m.style.Glyphs.Logo + " tailsnail"
 	left := m.style.Text(th.Accent, wordmark)
 	used := lipgloss.Width(wordmark)
 
@@ -120,10 +109,12 @@ func (m *Model) nodeBadge() string {
 	return badge
 }
 
-// helpBar renders the keybinding hints along the bottom.
+// helpBar renders the keybinding hints along the bottom. It always occupies
+// two lines so that a screen without hints is the same shape as one with them.
 func (m *Model) helpBar(hints []hint) string {
+	rule := m.style.FaintText(strings.Repeat(m.style.Glyphs.Horizontal, m.width))
 	if len(hints) == 0 {
-		return ""
+		return rule + "\n" + lipgloss.NewStyle().Width(m.width).Render("")
 	}
 	sep := m.style.FaintText("  " + m.style.Glyphs.Bullet + "  ")
 	parts := make([]string, 0, len(hints))
@@ -136,14 +127,15 @@ func (m *Model) helpBar(hints []hint) string {
 		parts = parts[:len(parts)-1]
 		line = strings.Join(parts, sep)
 	}
-	rule := m.style.FaintText(strings.Repeat(m.style.Glyphs.Horizontal, m.width))
 	return rule + "\n" + lipgloss.NewStyle().Width(m.width).Render(line)
 }
 
-// toastLine renders the active transient notice, if any.
+// toastLine renders the active transient notice. It always occupies exactly
+// one line, so its arrival and departure never move anything.
 func (m *Model) toastLine() string {
+	blank := lipgloss.NewStyle().Width(m.width).Render("")
 	if !m.toast.active(m.now) {
-		return ""
+		return blank
 	}
 	th := m.style.Theme
 	color := th.Dim
@@ -171,14 +163,15 @@ func (m *Model) center(body string, height int) string {
 	return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, body)
 }
 
-// bodyHeight is the space a screen's body has, given its chrome.
+// chromeRows is what the frame spends on everything but the body: two lines of
+// header, one reserved for a notice, and two of help bar.
+const chromeRows = 5
+
+// bodyHeight is the space a screen's body has, given its chrome. It does not
+// depend on whether a notice is showing, because the notice's line is always
+// reserved.
 func (m *Model) bodyHeight() int {
-	// Two lines of header, two of help, one optional toast.
-	reserved := 4
-	if m.toast.active(m.now) {
-		reserved++
-	}
-	return max(m.height-reserved, 1)
+	return max(m.height-chromeRows, 1)
 }
 
 // resizeOverlay returns a full-screen "make the window bigger" view when the

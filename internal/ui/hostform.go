@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theolol/tailsnail/internal/game"
 	"github.com/theolol/tailsnail/internal/netplay"
@@ -333,14 +334,12 @@ func (m *Model) viewForm() string {
 	th := m.style.Theme
 	g := m.style.Glyphs
 
-	// One row per field: a wrapped value would shift every row beneath it.
-	panelWidth := min(max(m.width-8, 40), 60)
-	inner := panelWidth - 4 // border and padding
-
 	visible := m.visibleFields()
-	rows := make([]string, 0, len(visible)+4)
+	fieldRows := make([]string, 0, len(visible))
+	// The panel's own top border sits above the first row.
 	const panelHeaderRows = 1
 	selectedRow := panelHeaderRows
+	selectedWidth := 0
 	selectedHelp := ""
 
 	for _, idx := range visible {
@@ -353,8 +352,6 @@ func (m *Model) viewForm() string {
 		if selected {
 			marker = m.style.Accent(g.Arrow + " ")
 			label = m.style.Text(th.Accent, pad(f.label, 14))
-			selectedRow = panelHeaderRows + len(rows)
-			selectedHelp = f.help
 			if !f.text {
 				// Show the adjustment affordance only where it applies.
 				left, right := "‹ ", " ›"
@@ -364,13 +361,28 @@ func (m *Model) viewForm() string {
 				value = m.style.FaintText(left) + m.style.Text(th.Fg, f.value(m)) + m.style.FaintText(right)
 			}
 		}
-		rows = append(rows, truncateStyled(marker+label+value, inner))
+		row := marker + label + value
+		if selected {
+			selectedRow = panelHeaderRows + len(fieldRows)
+			selectedWidth = ansi.StringWidth(row)
+			selectedHelp = f.help
+		}
+		fieldRows = append(fieldRows, row)
 	}
 
-	rows = append(rows, "", m.style.FaintText(strings.Repeat(g.Horizontal, 44)), m.sizeAdvice())
+	advice := m.sizeAdvice()
+	// The panel hugs its contents rather than reserving a fixed width.
+	inner := min(max(naturalWidth(append(append([]string{}, fieldRows...), advice)), 34), max(m.width-8, 24))
+	for i := range fieldRows {
+		fieldRows[i] = truncateStyled(fieldRows[i], inner)
+	}
+	selectedWidth = min(selectedWidth, inner)
 
-	panel := m.style.Panel().Width(panelWidth).Render(
-		lipgloss.JoinVertical(lipgloss.Left, rows...))
+	rows := append(fieldRows,
+		"", m.style.FaintText(strings.Repeat(g.Horizontal, inner)), truncateStyled(advice, inner))
+	// lipgloss counts padding inside Width, so a panel holding `inner` cells
+	// of content has to be built two wider than that.
+	panel := m.style.Panel().Width(inner + 2).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 
 	action := "press enter to open the lobby"
 	if m.form.editing {
@@ -379,14 +391,13 @@ func (m *Model) viewForm() string {
 	body := lipgloss.JoinVertical(lipgloss.Center, panel, "", m.style.Text(th.Accent, action))
 
 	frame, top, left := m.place(body, m.bodyHeight())
-	// The panel is the first block of the joined body, so its top edge is the
-	// placed body's top edge.
+	// The panel is centred within the body, which may be wider if the action
+	// line is longer. Its content begins one border and one padding cell in.
+	panelLeft := left + (lipgloss.Width(body)-lipgloss.Width(panel))/2
 	frame = m.withTooltip(frame, tooltip{
-		text:       selectedHelp,
-		row:        selectedRow,
-		panelTop:   top,
-		panelLeft:  left + (lipgloss.Width(body)-lipgloss.Width(panel))/2,
-		panelWidth: lipgloss.Width(panel),
+		text: selectedHelp,
+		row:  top + selectedRow,
+		col:  panelLeft + 2 + selectedWidth + 1,
 	})
 
 	title, back := "host a game", "back"

@@ -10,7 +10,9 @@ func (s *Sim) spawnSnake(id PlayerID, i, n int) Snake {
 	a := s.state.Arena
 	cx := float64(a.X0+a.X1) / 2
 	cy := float64(a.Y0+a.Y1) / 2
-	radius := math.Min(float64(a.Width()), float64(a.Height())) * 0.32
+	// Far enough out that the countdown, which is drawn over the middle of the
+	// arena, does not cover anybody while they are looking for their snake.
+	radius := math.Min(float64(a.Width()), float64(a.Height())) * 0.38
 
 	theta := 2 * math.Pi * float64(i) / float64(n)
 	head := Point{

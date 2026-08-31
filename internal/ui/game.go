@@ -178,6 +178,11 @@ func (m *Model) updateGame(msg tea.KeyMsg) tea.Cmd {
 		m.screen = screenBrowser
 		return nil
 	}
+	// Steering before the first tick would be discarded by the host anyway;
+	// ignoring it here keeps the countdown from feeling unresponsive rather
+	// than broken.
+	counting := m.room.state.Phase == proto.PhaseCountdown
+
 	var dir game.Direction
 	switch {
 	case key.Matches(msg, m.keys.Up):
@@ -202,6 +207,9 @@ func (m *Model) updateGame(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 
+	if counting {
+		return nil
+	}
 	m.session.Input(dir)
 	m.game.pendingDir = dir
 	m.game.hasPending = true
@@ -215,11 +223,75 @@ func (m *Model) viewGame() string {
 	hud := m.renderHUD(st)
 
 	body := lipgloss.JoinVertical(lipgloss.Center, hud, arena)
-	// The tick number means nothing to a player; elapsed time does.
+	frame, top, left := m.place(body, m.bodyHeight())
+
+	counting := m.room.state.Phase == proto.PhaseCountdown
+	if counting {
+		frame = m.overlayCountdown(frame, body, arena, hud, top, left)
+	}
+
 	subtitle := duration(m.now.Sub(m.game.started))
-	return m.chrome(m.room.state.Name, subtitle, m.center(body, m.bodyHeight()), []hint{
-		{"↑↓←→ / wasd", "steer"}, {"esc", "leave"}, {",", "settings"},
-	})
+	hints := []hint{{"↑↓←→ / wasd", "steer"}, {"esc", "leave"}, {",", "settings"}}
+	if counting {
+		// The tick clock has not started, so elapsed time would read as zero.
+		subtitle = fmt.Sprintf("find your snake — starting in %d", max(m.room.state.Countdown, 0))
+		hints = []hint{{"esc", "leave"}}
+	}
+	return m.chrome(m.room.state.Name, subtitle, frame, hints)
+}
+
+// overlayCountdown draws the starting countdown over the middle of the arena.
+//
+// The board is already on screen by this point, so players can pick out their
+// own snake and see the others before anything moves. Snakes are spawned clear
+// of the centre so the digit does not cover one of them.
+func (m *Model) overlayCountdown(frame, body, arena, hud string, top, left int) string {
+	block := m.countdownBlock(m.room.state.Countdown, m.compactCountdown())
+
+	arenaTop := top + lipgloss.Height(hud)
+	arenaLeft := left + (lipgloss.Width(body)-lipgloss.Width(arena))/2
+
+	row := arenaTop + (lipgloss.Height(arena)-lipgloss.Height(block))/2
+	col := arenaLeft + (lipgloss.Width(arena)-lipgloss.Width(block))/2
+	return overlayAt(frame, block, max(row, arenaTop), max(col, arenaLeft))
+}
+
+// countdownDigitWidth and countdownDigitHeight are the block digit's size, and
+// the area of arena it covers.
+const (
+	countdownDigitWidth  = 6
+	countdownDigitHeight = 5
+)
+
+// compactCountdown reports whether the arena is too small to give up a 6×5
+// block to the countdown. Below this size the spawn ring cannot clear that
+// area, so a single character is used instead.
+func (m *Model) compactCountdown() bool {
+	return m.game.cfg.Height < 14 || m.game.cfg.Width < 24
+}
+
+// countdownBlock renders the digit alone.
+//
+// Every cell it occupies covers the board underneath, so it is kept to the
+// bare digit: a caption would blank a wider rectangle of arena, and the
+// wording belongs in the subtitle where it costs nothing. Snakes are spawned
+// clear of the centre so the digit does not land on one.
+func (m *Model) countdownBlock(n int, compact bool) string {
+	th := m.style.Theme
+	if n <= 0 {
+		return m.style.Text(th.Accent, "go!")
+	}
+	// Each digit swells as its second begins and settles as it ends.
+	color := th.Accent.Scale(0.75 + 0.45*m.pulse(time.Second))
+	if compact {
+		return m.style.Text(color, fmt.Sprintf("%d", n))
+	}
+
+	lines := make([]string, 0, countdownDigitHeight)
+	for _, l := range bigDigit(n, m.style.Glyphs.ASCII) {
+		lines = append(lines, m.style.Text(color, l))
+	}
+	return lipgloss.JoinVertical(lipgloss.Center, lines...)
 }
 
 // cell is one rendered arena position.

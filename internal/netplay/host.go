@@ -340,16 +340,12 @@ func (h *Host) housekeeping() {
 	case proto.PhaseCountdown:
 		if !h.everyoneReady() {
 			// Somebody un-readied; abort rather than starting anyway.
-			h.phase = proto.PhaseOpen
-			h.lastCount = 0
-			h.note("countdown cancelled")
-			h.broadcastLobby()
-			h.refreshAdvert()
+			h.abortCountdown("countdown cancelled")
 			break
 		}
 		remaining := int(math.Ceil(time.Until(h.countdownEnd).Seconds()))
 		if remaining <= 0 {
-			h.startMatch()
+			h.beginPlay()
 			break
 		}
 		if remaining != h.lastCount {
@@ -409,18 +405,15 @@ func (h *Host) everyoneReady() bool {
 	return true
 }
 
-// beginCountdown moves the lobby into its pre-match countdown.
+// beginCountdown builds the match and moves the lobby into its pre-match
+// countdown.
+//
+// The simulation is created here rather than when the countdown expires so the
+// board can be shown during it: players get three seconds to find their own
+// snake and see where everyone else starts, which is the difference between
+// reacting at the first tick and spending it working out which one is you.
+// Nothing is stepped until the countdown reaches zero.
 func (h *Host) beginCountdown() {
-	h.phase = proto.PhaseCountdown
-	h.countdownEnd = time.Now().Add(countdownSeconds * time.Second)
-	h.lastCount = countdownSeconds
-	h.note("all players ready — starting")
-	h.refreshAdvert()
-	h.broadcastLobby()
-}
-
-// startMatch builds the simulation and announces the first tick.
-func (h *Host) startMatch() {
 	seats := make([]game.PlayerID, 0, len(h.seats))
 	for _, s := range h.seats {
 		seats = append(seats, s.id)
@@ -441,22 +434,51 @@ func (h *Host) startMatch() {
 	h.matchCfg = cfg
 	h.matchPlayers = h.playerList()
 	h.matchID = proto.NewMatchID()
-	h.startedAt = time.Now()
-	h.phase = proto.PhaseInGame
 	h.pending = make(map[game.PlayerID]pendingInput)
+
+	h.phase = proto.PhaseCountdown
+	h.countdownEnd = time.Now().Add(countdownSeconds * time.Second)
+	h.lastCount = countdownSeconds
+	h.note("all players ready — starting")
 	h.refreshAdvert()
 
-	players := h.matchPlayers
 	for _, s := range h.seatsSnapshot() {
 		if s.local() {
 			continue
 		}
 		h.sendTo(s, proto.KindStart, proto.Start{
-			MatchID: h.matchID, Config: cfg, Seats: players, YourSeat: s.id,
+			MatchID: h.matchID, Config: cfg, Seats: h.matchPlayers, YourSeat: s.id,
 		}, false)
 	}
-	h.emit(GameStarted{MatchID: h.matchID, Config: cfg, Seat: 0, Players: players})
+	h.emit(GameStarted{MatchID: h.matchID, Config: cfg, Seat: 0, Players: h.matchPlayers})
 	h.broadcastState()
+	h.broadcastLobby()
+}
+
+// beginPlay starts the clock on a match whose board is already on screen.
+func (h *Host) beginPlay() {
+	if h.sim == nil {
+		h.abortCountdown("the match could not start")
+		return
+	}
+	h.startedAt = time.Now()
+	h.phase = proto.PhaseInGame
+	h.lastCount = 0
+	h.refreshAdvert()
+	h.broadcastLobby()
+}
+
+// abortCountdown tears a pending match down and reopens the lobby. It is what
+// happens when somebody un-readies or leaves while the clock is running: the
+// board on everyone's screen is no longer the board that would be played.
+func (h *Host) abortCountdown(reason string) {
+	h.sim = nil
+	h.phase = proto.PhaseOpen
+	h.lastCount = 0
+	h.clearReady()
+	h.note("%s", reason)
+	h.refreshAdvert()
+	h.broadcastLobby()
 }
 
 // tick advances the simulation one step and broadcasts the result.
@@ -1086,6 +1108,10 @@ func (h *Host) removeSeat(id game.PlayerID, reason string) {
 		}
 		if h.sim != nil && h.phase == proto.PhaseInGame {
 			h.sim.Eliminate(id)
+		}
+		if h.phase == proto.PhaseCountdown {
+			// The board on everyone's screen no longer matches who is playing.
+			defer h.abortCountdown("a player left before the match started")
 		}
 		if s.local() {
 			// A bot: nothing to disconnect, just take the seat away.

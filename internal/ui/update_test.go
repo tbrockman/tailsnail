@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/theolol/tailsnail/internal/game"
 	"github.com/theolol/tailsnail/internal/netplay"
@@ -785,6 +787,12 @@ func TestActivityDialogTogglesFromTheRoom(t *testing.T) {
 
 func TestTheActivityDialogSwallowsInput(t *testing.T) {
 	m, sess := sessionModel(t, false)
+	// More entries than the dialog can show, so there is something to scroll.
+	for i := range 60 {
+		m.room.state.Events = append(m.room.state.Events, proto.LobbyEvent{
+			At: m.now, Text: fmt.Sprintf("entry %d", i),
+		})
+	}
 	m = send(t, m, press("a"))
 
 	// Ready must not fire while the dialog is up.
@@ -799,6 +807,39 @@ func TestTheActivityDialogSwallowsInput(t *testing.T) {
 	m = send(t, m, press("up"))
 	if m.modalTop != 1 {
 		t.Errorf("modalTop = %d, want the dialog to have scrolled", m.modalTop)
+	}
+}
+
+func TestPagingStopsAtTheStartOfTheFeed(t *testing.T) {
+	m, _ := sessionModel(t, false)
+	for i := range 40 {
+		m.room.state.Events = append(m.room.state.Events, proto.LobbyEvent{
+			At: m.now, Text: fmt.Sprintf("entry %d", i),
+		})
+	}
+	m = send(t, m, press("a"))
+
+	limit := m.modalScrollLimit()
+	if limit == 0 {
+		t.Fatal("the feed is not long enough to scroll; the test proves nothing")
+	}
+	// Page well past the beginning; it must stop, not run off into blank space.
+	for range limit + 25 {
+		m = send(t, m, press("up"))
+	}
+	if m.modalTop != limit {
+		t.Fatalf("modalTop = %d, want it capped at %d", m.modalTop, limit)
+	}
+
+	// And the dialog keeps its height throughout, so nothing jumps.
+	heights := map[int]bool{}
+	for _, top := range []int{0, 1, limit / 2, limit} {
+		m.modalTop = top
+		heights[lipgloss.Height(m.View())] = true
+		checkFrame(t, m, "activity paged", m.View())
+	}
+	if len(heights) != 1 {
+		t.Errorf("the dialog changed the frame height while scrolling: %v", heights)
 	}
 }
 

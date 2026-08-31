@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -197,6 +198,18 @@ func summarise(events []Event) string {
 func isType[T Event](ev Event) bool {
 	_, ok := ev.(T)
 	return ok
+}
+
+// lastTick returns the most recent authoritative state the collector saw.
+func (c *collector) lastTick() (game.State, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := len(c.events) - 1; i >= 0; i-- {
+		if tick, ok := c.events[i].(Tick); ok {
+			return tick.State, true
+		}
+	}
+	return game.State{}, false
 }
 
 // lastLobby returns the most recent roster the collector saw.
@@ -1011,6 +1024,13 @@ func TestLeavingAMatchForfeitsIt(t *testing.T) {
 		}
 	}
 
+	// Wait for the clock to actually be running: leaving during the countdown
+	// aborts it instead, which is a different path.
+	events.waitFor(t, "the first tick", 10*time.Second, func(ev Event) bool {
+		tick, ok := ev.(Tick)
+		return ok && tick.State.Tick > 0
+	})
+
 	// Walking out mid-match forfeits rather than leaving a coasting snake.
 	client.Close("had to go")
 
@@ -1090,5 +1110,110 @@ func TestAReadyThatCrossesASettingsChangeIsRefused(t *testing.T) {
 		if p.DisplayName == "grace" && p.Ready {
 			t.Fatal("a ready sent against the old settings was accepted")
 		}
+	}
+}
+
+func TestTheBoardIsVisibleDuringTheCountdown(t *testing.T) {
+	h := newHarness(t, "ada")
+	ctx := context.Background()
+
+	cfg := fastConfig()
+	cfg.MaxPlayers = 4
+	cfg.Bots = 2
+	host, err := h.server.Host(ctx, HostOptions{Name: "preview", Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { host.Close("test over") })
+	events := collect(host)
+	events.waitFor(t, "the opening roster", 5*time.Second, isType[LobbyUpdate])
+
+	host.SetReady(true)
+
+	// The match is announced, and the board sent, as soon as the countdown
+	// begins — not when it ends.
+	started := events.waitFor(t, "the match announcement", 5*time.Second, isType[GameStarted])
+	if len(started.(GameStarted).Players) != 3 {
+		t.Fatalf("announced %d players, want 3", len(started.(GameStarted).Players))
+	}
+	first := events.waitFor(t, "the opening board", 5*time.Second, isType[Tick])
+	state := first.(Tick).State
+	if state.Tick != 0 {
+		t.Errorf("the opening board is at tick %d, want 0: nothing should have moved yet", state.Tick)
+	}
+	if len(state.Snakes) != 3 {
+		t.Fatalf("the opening board has %d snakes, want 3", len(state.Snakes))
+	}
+
+	// The lobby says it is counting down, and reports how long is left.
+	counting := events.waitFor(t, "the countdown", 5*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		return ok && lu.State.Phase == proto.PhaseCountdown && lu.State.Countdown > 0
+	})
+	if got := counting.(LobbyUpdate).State.Countdown; got > countdownSeconds {
+		t.Errorf("countdown = %d, want at most %d", got, countdownSeconds)
+	}
+
+	// Nothing moves until the countdown expires.
+	opening := append([]game.Point(nil), state.Snakes[0].Body...)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		last, ok := events.lastTick()
+		if ok && last.Tick > 0 {
+			t.Fatal("the simulation stepped during the countdown")
+		}
+		if ok && !reflect.DeepEqual(last.Snakes[0].Body, opening) {
+			t.Fatal("a snake moved during the countdown")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// And then it does start.
+	events.waitFor(t, "play to begin", 10*time.Second, func(ev Event) bool {
+		tick, ok := ev.(Tick)
+		return ok && tick.State.Tick > 0
+	})
+}
+
+func TestUnreadyingDuringTheCountdownAbortsIt(t *testing.T) {
+	h := newHarness(t, "ada")
+	j := newJoiner(t, "grace")
+	ctx := context.Background()
+
+	cfg := fastConfig()
+	cfg.MaxPlayers = 2
+	host, err := h.server.Host(ctx, HostOptions{Name: "aborting", Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { host.Close("test over") })
+	events := collect(host)
+
+	client, err := j.join(ctx, h.addr, host.LobbyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close("test over") })
+	events.waitFor(t, "both seats", 5*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		return ok && len(lu.State.Players) == 2
+	})
+
+	host.SetReady(true)
+	client.SetReady(true)
+	events.waitFor(t, "the countdown", 10*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		return ok && lu.State.Phase == proto.PhaseCountdown
+	})
+
+	host.SetReady(false)
+	events.waitFor(t, "the lobby to reopen", 5*time.Second, func(ev Event) bool {
+		lu, ok := ev.(LobbyUpdate)
+		return ok && lu.State.Phase == proto.PhaseOpen
+	})
+
+	// Nothing should ever have ticked.
+	if last, ok := events.lastTick(); ok && last.Tick > 0 {
+		t.Fatalf("the simulation ran to tick %d despite the countdown being cancelled", last.Tick)
 	}
 }

@@ -376,12 +376,12 @@ func TestRoomRendersAllPhases(t *testing.T) {
 			if phase == proto.PhaseCountdown {
 				// The countdown owns the screen; the roster would only be
 				// noise under a swelling digit.
-				for _, unwanted := range []string{"ada", "grace", "seats", "activity"} {
+				for _, unwanted := range []string{"ada", "grace", "seats", "ready"} {
 					if strings.Contains(plain, unwanted) {
 						t.Errorf("the countdown still shows %q", unwanted)
 					}
 				}
-				if !strings.Contains(plain, "starting") {
+				if !strings.Contains(plain, "starting in") {
 					t.Errorf("the countdown does not say what is happening:\n%s", plain)
 				}
 				return
@@ -1104,7 +1104,7 @@ func labelRows(view string) map[string]int {
 		for _, label := range []string{
 			"lobby name", "arena width", "arena height", "tick rate", "snake speed",
 			"max players", "bots", "walls", "mode", "shrink every", "food",
-			"display name", "theme", "glyphs", "colour", "emoji", "auto-resize",
+			"display name", "theme", "glyphs", "colour", "auto-resize",
 			"node details", "re-authenticate",
 		} {
 			if strings.HasPrefix(trimmed, label) {
@@ -1313,7 +1313,7 @@ func TestEveryFieldOccupiesExactlyOneRow(t *testing.T) {
 			"snake speed", "max players", "bots", "walls", "mode", "food",
 		}},
 		{"settings", screenSettings, []string{
-			"display name", "theme", "glyphs", "colour", "emoji",
+			"display name", "theme", "glyphs", "colour",
 			"auto-resize", "node details", "re-authenticate",
 		}},
 	}
@@ -1386,5 +1386,180 @@ func TestAPeerIsOnlyMarkedJoiningWhileAJoinIsInFlight(t *testing.T) {
 	m.browser.joining = "peer-1"
 	if !strings.Contains(stripANSI(m.View()), "joining") {
 		t.Error("a join in flight is not shown")
+	}
+}
+
+func TestANoticeDoesNotShiftTheLayout(t *testing.T) {
+	// The notice line is always reserved, so a message appearing or expiring
+	// must leave every other line exactly where it was.
+	for _, sc := range []screen{screenMenu, screenBrowser, screenHostForm, screenSettings, screenHistory} {
+		m := newTestModel(t)
+		m.node = runningNode()
+		m.screen = sc
+
+		before := strings.Split(stripANSI(m.View()), "\n")
+		m.setToast(toastOk, "Settings saved")
+		during := strings.Split(stripANSI(m.View()), "\n")
+
+		if len(before) != len(during) {
+			t.Fatalf("screen %v: a notice changed the frame from %d to %d lines", sc, len(before), len(during))
+		}
+		differing := 0
+		for i := range before {
+			if before[i] != during[i] {
+				differing++
+			}
+		}
+		if differing != 1 {
+			t.Errorf("screen %v: a notice changed %d lines, want only its own", sc, differing)
+		}
+		if !strings.Contains(during[len(during)-3], "Settings saved") {
+			t.Errorf("screen %v: the notice is not on the reserved line", sc)
+		}
+	}
+}
+
+func TestTheCountdownShowsTheBoard(t *testing.T) {
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height = 46, 18
+	m := gameFixture(t, 4, cfg)
+	m.width, m.height = 100, 34
+	m.node = runningNode()
+
+	lobby := sampleLobby(proto.PhaseCountdown, 4)
+	lobby.Config = cfg
+	lobby.Countdown = 2
+	m.room.apply(lobby)
+
+	// A freshly built board: nothing has moved yet.
+	sim, err := game.New(cfg, []game.PlayerID{0, 1, 2, 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := sim.State()
+	m.game.apply(state, m.now)
+
+	view := m.View()
+	checkFrame(t, m, "countdown over the arena", view)
+	plain := stripANSI(view)
+
+	// The arena and the scoreboard are both up, so a player can find their own
+	// snake before anything moves.
+	if !strings.Contains(plain, strings.Repeat(m.style.Glyphs.Horizontal, cfg.Width)) {
+		t.Error("the arena is not drawn during the countdown")
+	}
+	for _, p := range samplePlayers(4) {
+		if !strings.Contains(plain, m.style.Glyphs.Head(p.Palette)) {
+			t.Errorf("seat %d's glyph is not on screen during the countdown", p.Seat)
+		}
+	}
+	if !strings.Contains(plain, "starting in 2") {
+		t.Errorf("the countdown does not say how long is left:\n%s", plain)
+	}
+}
+
+func TestTheCountdownDigitDoesNotCoverASnake(t *testing.T) {
+	// Snakes spawn clear of the middle precisely so the digit does not land on
+	// one while players are looking for themselves.
+	for _, size := range []struct{ w, h int }{
+		{game.MinWidth, game.MinHeight}, {30, 16}, {46, 18}, {80, 30},
+	} {
+		cfg := game.DefaultConfig()
+		cfg.Width, cfg.Height = size.w, size.h
+		for seats := 2; seats <= game.MaxPlayers; seats++ {
+			ids := make([]game.PlayerID, seats)
+			for i := range ids {
+				ids[i] = game.PlayerID(i)
+			}
+			sim, err := game.New(cfg, ids)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The block the digit occupies, centred on the arena. Small
+			// arenas fall back to a single character, which cannot cover
+			// anything the spawn ring keeps clear of the middle.
+			digitW, digitH := countdownDigitWidth, countdownDigitHeight
+			if cfg.Height < 14 || cfg.Width < 24 {
+				digitW, digitH = 1, 1
+			}
+			x0 := (cfg.Width - digitW) / 2
+			y0 := (cfg.Height - digitH) / 2
+
+			for _, sn := range sim.State().Snakes {
+				h := sn.Head()
+				if h.X >= x0 && h.X < x0+digitW && h.Y >= y0 && h.Y < y0+digitH {
+					t.Errorf("%dx%d with %d seats: seat %d spawns at %v, under the countdown",
+						size.w, size.h, seats, sn.ID, h)
+				}
+			}
+		}
+	}
+}
+
+func TestTheActivityDialogHugsItsContents(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 120, 30
+	m.node = runningNode()
+	m.screen = screenRoom
+	m.session = &fakeSession{}
+
+	lobby := sampleLobby(proto.PhaseOpen, 2)
+	lobby.Events = []proto.LobbyEvent{{At: time.Now(), Text: "short"}}
+	m.room.apply(lobby)
+	m.openModal(modalActivity)
+
+	// Find the dialog's width from its border.
+	width := 0
+	for _, line := range strings.Split(stripANSI(m.View()), "\n") {
+		if strings.Contains(line, "╭") {
+			width = strings.Count(line, "─") + 2
+		}
+	}
+	if width == 0 {
+		t.Fatal("no dialog was drawn")
+	}
+	// A short feed must not produce a dialog anywhere near the full window.
+	if width > m.width/2 {
+		t.Errorf("the dialog is %d cells wide for one short entry in a %d-cell window", width, m.width)
+	}
+}
+
+func TestTheActivityDialogKeepsItsSizeWhileScrolling(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 110, 30
+	m.node = runningNode()
+	m.screen = screenRoom
+	m.session = &fakeSession{}
+
+	lobby := sampleLobby(proto.PhaseOpen, 2)
+	for i := range 40 {
+		lobby.Events = append(lobby.Events, proto.LobbyEvent{
+			At: time.Now(), Text: fmt.Sprintf("entry %d", i),
+		})
+	}
+	// One long entry sets the width; it must not shrink when scrolled away.
+	lobby.Events[0].Text = strings.Repeat("wide ", 9)
+	m.room.apply(lobby)
+	m.openModal(modalActivity)
+
+	measure := func() (w, h int) {
+		for _, line := range strings.Split(stripANSI(m.View()), "\n") {
+			if strings.Contains(line, "╭") {
+				w = strings.Count(line, "─") + 2
+			}
+			if strings.Contains(line, "│") {
+				h++
+			}
+		}
+		return w, h
+	}
+	wantW, wantH := measure()
+	limit := m.modalScrollLimit()
+	for _, top := range []int{0, 1, limit / 2, limit} {
+		m.modalTop = top
+		gotW, gotH := measure()
+		if gotW != wantW || gotH != wantH {
+			t.Errorf("at scroll %d the dialog is %dx%d, want %dx%d", top, gotW, gotH, wantW, wantH)
+		}
 	}
 }

@@ -140,7 +140,7 @@ func TestPlaceReportsWhereContentLanded(t *testing.T) {
 	}
 }
 
-func TestTooltipSitsBesideThePanelAndNeverOverflows(t *testing.T) {
+func TestTooltipAttachesToTheTextAndNeverOverflows(t *testing.T) {
 	m := newTestModel(t)
 	for _, width := range []int{62, 80, 100, 140} {
 		m.width, m.height = width, 30
@@ -149,12 +149,11 @@ func TestTooltipSitsBesideThePanelAndNeverOverflows(t *testing.T) {
 		}, "\n"))
 		frame, top, left := m.place(panel, 20)
 
+		// Anchored just past the text of row three, not at the panel's edge.
 		out := m.withTooltip(frame, tooltip{
-			text:       "a description long enough to need wrapping across a couple of lines",
-			row:        2,
-			panelTop:   top,
-			panelLeft:  left,
-			panelWidth: lipgloss.Width(panel),
+			text: "a description long enough to need wrapping across a couple of lines",
+			row:  top + 3,
+			col:  left + 2 + len("row three") + 1,
 		})
 		if lipgloss.Height(out) != lipgloss.Height(frame) {
 			t.Errorf("width %d: the tooltip changed the frame height", width)
@@ -167,26 +166,68 @@ func TestTooltipSitsBesideThePanelAndNeverOverflows(t *testing.T) {
 	}
 }
 
-func TestTooltipIsDroppedWhenThereIsNoRoom(t *testing.T) {
+func TestTooltipPointerSitsNextToTheText(t *testing.T) {
 	m := newTestModel(t)
-	m.width, m.height = 46, 20
-	panel := m.style.Panel().Width(40).Render("row one\nrow two")
-	frame, top, left := m.place(panel, 16)
+	m.width, m.height = 120, 24
+	panel := m.style.Panel().Width(40).Render("row one\nrow two\nrow three")
+	frame, top, left := m.place(panel, 18)
 
-	out := m.withTooltip(frame, tooltip{
-		text: "no space for this", row: 1,
-		panelTop: top, panelLeft: left, panelWidth: lipgloss.Width(panel),
-	})
-	if out != frame {
-		t.Error("a tooltip was drawn where there was no room for one")
+	const anchorRow = 2
+	anchorCol := left + 2 + len("row two") + 1
+	out := m.withTooltip(frame, tooltip{text: "describes row two", row: top + anchorRow, col: anchorCol})
+
+	line := strings.Split(out, "\n")[top+anchorRow]
+	idx := strings.Index(stripANSI(line), m.style.Glyphs.PointLeft)
+	if idx < 0 {
+		t.Fatalf("no pointer on the anchored row: %q", stripANSI(line))
+	}
+	// The pointer must be attached to the text rather than out at the panel
+	// border, which is what "row two" ending well short of the panel tests.
+	if got := ansi.StringWidth(stripANSI(line)[:idx]); got != anchorCol {
+		t.Errorf("pointer at column %d, want %d (just past the text)", got, anchorCol)
 	}
 }
 
-func TestEmptyTooltipIsANoOp(t *testing.T) {
+func TestTooltipDropsBelowWhenThereIsNoRoomBeside(t *testing.T) {
+	// Falling back to the left would cover the label of the very field being
+	// described, so a cramped frame puts the box underneath instead.
 	m := newTestModel(t)
-	frame := "hello"
-	if got := m.withTooltip(frame, tooltip{}); got != frame {
-		t.Errorf("an empty tooltip changed the frame: %q", got)
+	m.width, m.height = 40, 20
+	panel := m.style.Panel().Width(34).Render("row one\nrow two\nrow three")
+	frame, top, left := m.place(panel, 16)
+
+	// Row 0 of the panel is its top border, so "row two" is two rows down.
+	anchorRow := top + 2
+	out := m.withTooltip(frame, tooltip{
+		text: "described", row: anchorRow, col: left + 30,
+	})
+	if out == frame {
+		t.Fatal("no tooltip was drawn at all")
+	}
+	for i, line := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(line); w > m.width {
+			t.Errorf("line %d is %d cells, want at most %d", i, w, m.width)
+		}
+	}
+	// The anchored row itself must survive: covering the field being described
+	// is the one thing worth avoiding.
+	if got := stripANSI(strings.Split(out, "\n")[anchorRow]); !strings.Contains(got, "row two") {
+		t.Errorf("the described row was covered: %q", got)
+	}
+	// And the description landed below it.
+	below := stripANSI(strings.Join(strings.Split(out, "\n")[anchorRow+1:], "\n"))
+	if !strings.Contains(below, "described") {
+		t.Errorf("the description is not below the row:\n%s", below)
+	}
+}
+
+func TestTooltipIsDroppedWhenTheFrameIsTooNarrowEntirely(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 18, 10
+	frame := strings.TrimRight(strings.Repeat(strings.Repeat(".", 18)+"\n", 10), "\n")
+
+	if out := m.withTooltip(frame, tooltip{text: "no room at all", row: 4, col: 9}); out != frame {
+		t.Error("a tooltip was drawn in a frame with no room for one")
 	}
 }
 
@@ -195,7 +236,7 @@ func TestModalIsCentredAndFitsTheFrame(t *testing.T) {
 	m.width, m.height = 100, 30
 	frame := strings.TrimRight(strings.Repeat(strings.Repeat(".", 100)+"\n", 30), "\n")
 
-	out := m.renderModal(frame, "activity", "something happened\nand then something else", "esc close", 40)
+	out := m.renderModal(frame, "activity", "something happened\nand then something else", "esc close")
 	if lipgloss.Height(out) != 30 {
 		t.Fatalf("modal changed the frame height to %d", lipgloss.Height(out))
 	}
@@ -212,12 +253,49 @@ func TestModalIsCentredAndFitsTheFrame(t *testing.T) {
 	}
 }
 
+func TestModalHugsItsContents(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 120, 30
+	frame := strings.TrimRight(strings.Repeat(strings.Repeat(".", 120)+"\n", 30), "\n")
+
+	body := "short\nalso short"
+	out := m.renderModal(frame, "tiny", body, "esc")
+
+	// Find the dialog's border and measure it: a container that reserves far
+	// more width than its contents leaves a band of dead space down one side.
+	widest := 0
+	for _, line := range strings.Split(stripANSI(out), "\n") {
+		if i := strings.Index(line, "╭"); i >= 0 {
+			widest = ansi.StringWidth(line) - i - strings.Index(reverse(line), reverse("╮"))
+		}
+	}
+	box := 0
+	for _, line := range strings.Split(stripANSI(out), "\n") {
+		if strings.Contains(line, "╭") {
+			box = strings.Count(line, "─") + 2
+		}
+	}
+	_ = widest
+	// "also short" is 10 cells; plus a border and a cell of padding each side.
+	if box > len("also short")+8 {
+		t.Errorf("the dialog is %d cells wide for %d cells of content", box, len("also short"))
+	}
+}
+
+func reverse(s string) string {
+	r := []rune(s)
+	for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {
+		r[i], r[j] = r[j], r[i]
+	}
+	return string(r)
+}
+
 func TestModalFitsANarrowFrame(t *testing.T) {
 	m := newTestModel(t)
 	m.width, m.height = 40, 12
 	frame := strings.TrimRight(strings.Repeat(strings.Repeat(".", 40)+"\n", 12), "\n")
 
-	out := m.renderModal(frame, "title", "body text", "footer", 200)
+	out := m.renderModal(frame, "title", "body text", "footer")
 	for i, line := range strings.Split(out, "\n") {
 		if w := ansi.StringWidth(line); w != 40 {
 			t.Errorf("line %d is %d cells, want 40", i, w)

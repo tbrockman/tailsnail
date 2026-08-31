@@ -84,8 +84,10 @@ log, `q` quits. Each screen's help bar lists the rest.
 
 Emoji detection is a heuristic — there is no capability query for it — so
 `auto` requires a UTF-8 locale *and* a terminal known to render emoji at the
-width it advertises. Anything unrecognised gets no icon, because a
-mis-measured cell shears every column after it. `--emoji=on` forces it.
+width it advertises. Anything unrecognised falls back to a plain spiral glyph
+rather than risking a mis-measured cell, which would shear every column after
+it. It is not a preference the app asks about, only a capability it detects;
+`--emoji` is there for when the detection is wrong.
 
 ## First run, step by step
 
@@ -280,6 +282,14 @@ roster with each player's colour and glyph, and toggle ready. **The match
 starts automatically once every seated player is ready**, after an animated
 3-2-1. Readying up alone is a legitimate practice mode.
 
+The board goes up as the countdown begins, not when it ends: three seconds to
+find your own snake and see where everyone else starts is the difference
+between reacting on the first tick and spending it working out which one is
+you. Nothing moves until the count reaches zero, and snakes spawn clear of the
+middle so the digit does not cover one. Un-readying or leaving during the
+countdown aborts it, because the board everyone is looking at would no longer
+be the board that gets played.
+
 The host can change a running lobby's settings in place with `e`, without
 tearing the room down. Doing so un-readies everyone, since they agreed to the
 previous configuration — and a ready that crossed paths with a change is
@@ -373,12 +383,19 @@ debug log overlay. Settings are reachable from any of them with `,`; enter
 saves and escape discards, and because theme and glyph changes apply live so
 they can be judged, discarding actively restores the previous look.
 
-Field descriptions are drawn as a popover beside the panel, with a pointer
-tying it to its row, rather than inline underneath the selection. An inline
-description changes the panel's height as the selection moves, so every row
-below it shifts by a line on each keypress — which makes a list impossible to
-scan. Every field is guaranteed exactly one row: a value too long to fit is
-trimmed rather than wrapped.
+Field descriptions are drawn as a popover attached to the text they describe,
+the way a tooltip attaches to an element rather than to the page. It overlaps
+whatever is beneath, except that it drops below the row instead of falling
+back to the left — covering the label of the very field being described is the
+one occlusion worth avoiding. Descriptions are not inline underneath the
+selection, because that changes the panel's height as the selection moves, so
+every row below shifts by a line on each keypress and the list becomes
+impossible to scan. Every field is guaranteed exactly one row: a value too
+long to fit is trimmed rather than wrapped.
+
+Containers are sized to their contents rather than to a fixed width, and
+transient notices occupy a permanently reserved line, so nothing on screen
+moves when one appears or expires.
 
 Animation is driven by a 60fps frame ticker off the wall clock, independent of
 the simulation tick rate — a 10-tick-per-second match shimmers at the same
@@ -446,8 +463,11 @@ go test ./...
   bounds.
 - `internal/ui` — every screen rendered across both themes, both glyph sets and
   all four colour depths, asserting no frame exceeds its viewport; that field
-  rows never shift as the selection moves; that overlays splice styled and
-  double-width content without shearing; and the update path — screen flow
+  rows never shift as the selection moves and a notice changes exactly one
+  line; that a dialog keeps its size while being scrolled and stops at the
+  start of its content; that the countdown never lands on a spawned snake at
+  any arena size or seat count; that overlays splice styled and double-width
+  content without shearing; and the update path — screen flow
   through a match, stale session generations, join success and failure, and
   settings save versus discard.
 

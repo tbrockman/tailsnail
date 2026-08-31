@@ -132,7 +132,8 @@ type Model struct {
 	logTop  int
 
 	// modal is the dialog drawn over the current screen, if any.
-	modal    modalKind
+	modal modalKind
+	// modalTop is how far back from the newest line the dialog is scrolled.
 	modalTop int
 
 	// settingsFrom is the screen to return to when settings closes, since it
@@ -161,7 +162,7 @@ func New(app *App) *Model {
 	env := theme.EnvFromOS()
 	mode := theme.Resolve(app.ColorFlag, env)
 	ascii := app.ASCIIFlag || app.Settings.ASCII
-	emoji := app.Settings.Emoji && theme.ResolveEmoji(app.EmojiFlag, env)
+	emoji := theme.ResolveEmoji(app.EmojiFlag, env)
 	m := &Model{
 		app:       app,
 		style:     theme.NewStyle(theme.ByName(app.Settings.Theme), mode, ascii, emoji),
@@ -190,10 +191,11 @@ func (m *Model) Init() tea.Cmd {
 	)
 }
 
-// windowTitle names the terminal window, with the icon where it will render.
+// windowTitle names the terminal window. The icon is only worth sending when
+// it is the emoji; a spiral in a title bar reads as line noise.
 func (m *Model) windowTitle() string {
-	if icon := m.style.Glyphs.Logo; icon != "" {
-		return icon + " tailsnail"
+	if m.style.Glyphs.Logo == theme.SnailIcon {
+		return theme.SnailIcon + " tailsnail"
 	}
 	return "tailsnail"
 }
@@ -438,10 +440,11 @@ func (m *Model) handleSessionEvent(ev netplay.Event) tea.Cmd {
 	switch e := ev.(type) {
 	case netplay.LobbyUpdate:
 		m.room.apply(e.State)
-		// The host reopens the lobby after a match. Normally MatchOver has
-		// already moved us to the results; this catches a match that ended
-		// without one, so the arena is not left on screen indefinitely.
-		if m.screen == screenGame && e.State.Phase != proto.PhaseInGame {
+		// The host reopens the lobby after a match, or aborts a countdown.
+		// Normally MatchOver has already moved us to the results; this catches
+		// a match that ended without one, so the arena is not left on screen.
+		// The countdown itself is played out on the arena, so it stays.
+		if m.screen == screenGame && e.State.Phase == proto.PhaseOpen {
 			m.screen = screenRoom
 		}
 	case netplay.GameStarted:
@@ -635,13 +638,26 @@ func (m *Model) openModal(kind modalKind) {
 	m.modalTop = 0
 }
 
+// modalScrollLimit is how far the active dialog can be paged back. It is
+// computed rather than remembered from the last render, so the key handler
+// never depends on a frame having been drawn first.
+func (m *Model) modalScrollLimit() int {
+	switch m.modal {
+	case modalActivity:
+		return max(len(m.activityLines(m.activityTextWidth()))-m.activityCapacity(), 0)
+	}
+	return 0
+}
+
 // updateModal handles input while a dialog is up.
 func (m *Model) updateModal(msg tea.KeyMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, m.keys.Back), msg.String() == "q", key.Matches(msg, m.keys.Activity):
 		m.modal = modalNone
 	case key.Matches(msg, m.keys.Up):
-		m.modalTop++
+		// Stop at the start of the content rather than scrolling into blank
+		// space, which would leave the dialog looking empty and stuck.
+		m.modalTop = min(m.modalTop+1, m.modalScrollLimit())
 	case key.Matches(msg, m.keys.Down):
 		m.modalTop = max(m.modalTop-1, 0)
 	case msg.String() == "ctrl+c":

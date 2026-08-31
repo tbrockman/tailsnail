@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theolol/tailsnail/internal/game"
 	"github.com/theolol/tailsnail/internal/proto"
@@ -121,11 +122,11 @@ func (m *Model) viewRoom() string {
 	}
 	st := m.room.state
 
-	// The countdown owns the screen. Once the match is seconds away the roster
-	// is no longer what anyone is looking at, and leaving it up under a
-	// swelling digit just makes the moment noisy.
+	// The countdown is normally played out on the arena, which is already on
+	// screen by then. This only shows if the roster is somehow still in front.
 	if st.Phase == proto.PhaseCountdown {
-		return m.chrome("", "", m.center(m.countdownBanner(st.Countdown), m.bodyHeight()), nil)
+		return m.chrome(st.Name, fmt.Sprintf("starting in %d", max(st.Countdown, 0)),
+			m.center(m.countdownBlock(st.Countdown, false), m.bodyHeight()), nil)
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Center,
@@ -137,6 +138,54 @@ func (m *Model) viewRoom() string {
 	return m.chrome("lobby", headline, m.center(body, m.bodyHeight()), m.roomHints())
 }
 
+// activityStampWidth is the width of the timestamp column, including its
+// trailing space.
+const activityStampWidth = 9
+
+// activityLines renders the whole feed into display lines, wrapped at the
+// given text width and padded so every line is the same width.
+//
+// Paging works over rendered lines rather than entries, because an entry that
+// wraps to three lines would otherwise make one keypress jump three.
+func (m *Model) activityLines(textWidth int) []string {
+	events := m.room.state.Events
+	if len(events) == 0 {
+		return []string{pad(m.style.FaintText("nothing has happened yet"), activityStampWidth+textWidth)}
+	}
+
+	var out []string
+	for _, e := range events {
+		stamp := m.style.FaintText(e.At.Format("15:04:05") + " ")
+		wrapped := lipgloss.NewStyle().Width(textWidth).Render(m.style.DimText(e.Text))
+		for i, line := range strings.Split(wrapped, "\n") {
+			prefix := stamp
+			if i > 0 {
+				// Continuation lines sit under the text, not the timestamp.
+				prefix = strings.Repeat(" ", activityStampWidth)
+			}
+			out = append(out, pad(prefix+line, activityStampWidth+textWidth))
+		}
+	}
+	return out
+}
+
+// activityTextWidth is the wrapping width, taken from the longest entry so the
+// dialog hugs its contents and does not change width as it is scrolled.
+func (m *Model) activityTextWidth() int {
+	longest := 0
+	for _, e := range m.room.state.Events {
+		longest = max(longest, ansi.StringWidth(e.Text))
+	}
+	cap := min(max(m.width-28, 24), 56)
+	return min(max(longest, 24), cap)
+}
+
+// activityCapacity is how many lines the dialog shows. It is fixed for a given
+// window size, so scrolling never changes the dialog's height.
+func (m *Model) activityCapacity() int {
+	return min(max(m.height-12, 4), 14)
+}
+
 // viewActivityModal draws the lobby's event feed over the current screen.
 //
 // The feed used to sit permanently beside the roster, where long lines wrapped
@@ -144,32 +193,29 @@ func (m *Model) viewRoom() string {
 // actually reading. As a dialog it can be as wide as it needs and is only
 // present when someone asks for it.
 func (m *Model) viewActivityModal(frame string) string {
-	events := m.room.state.Events
-	width := min(max(m.width-12, 30), 60)
+	textWidth := m.activityTextWidth()
+	lines := m.activityLines(textWidth)
+	capacity := m.activityCapacity()
 
-	visible := max(min(m.height-10, 14), 3)
-	end := max(len(events)-m.modalTop, 0)
-	start := max(end-visible, 0)
-	m.modalTop = min(m.modalTop, max(len(events)-1, 0))
+	// modalTop counts back from the newest line.
+	limit := max(len(lines)-capacity, 0)
+	m.modalTop = min(max(m.modalTop, 0), limit)
 
-	var rows []string
-	if len(events) == 0 {
-		rows = append(rows, m.style.FaintText("nothing has happened yet"))
-	}
-	for _, e := range events[start:end] {
-		stamp := m.style.FaintText(e.At.Format("15:04:05") + " ")
-		// Wrap rather than clip: a dialog has the room, and a line cut in half
-		// is worse than one that runs on.
-		text := lipgloss.NewStyle().Width(width - 11).Render(m.style.DimText(e.Text))
-		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, stamp, text))
+	end := len(lines) - m.modalTop
+	start := max(end-capacity, 0)
+	window := append([]string(nil), lines[start:end]...)
+	// Hold the height steady even when there is not enough to fill it.
+	blank := strings.Repeat(" ", activityStampWidth+textWidth)
+	for len(window) < capacity {
+		window = append(window, blank)
 	}
 
 	footer := "esc close"
-	if len(events) > visible {
-		footer = fmt.Sprintf("%d of %d  %s  ↑/↓ scroll  %s  esc close",
-			end-start, len(events), m.style.Glyphs.Bullet, m.style.Glyphs.Bullet)
+	if limit > 0 {
+		footer = fmt.Sprintf("%d–%d of %d  %s  ↑/↓ scroll  %s  esc close",
+			start+1, end, len(lines), m.style.Glyphs.Bullet, m.style.Glyphs.Bullet)
 	}
-	return m.renderModal(frame, "activity", lipgloss.JoinVertical(lipgloss.Left, rows...), footer, width)
+	return m.renderModal(frame, "activity", strings.Join(window, "\n"), footer)
 }
 
 // roomHints builds the help bar for the room, which differs for the host.
@@ -292,25 +338,6 @@ func (m *Model) readinessBanner() string {
 		return m.style.Text(color, "press r when you're ready")
 	}
 	return m.style.Text(th.Dim, fmt.Sprintf("waiting on %d %s", waiting, plural(waiting, "player", "players")))
-}
-
-// countdownBanner renders the animated 3-2-1 before kickoff.
-func (m *Model) countdownBanner(n int) string {
-	if n <= 0 {
-		return m.style.Text(m.style.Theme.Accent, "go!")
-	}
-	th := m.style.Theme
-	// Each digit swells as its second begins and settles as it ends.
-	beat := m.pulse(time.Second)
-	color := th.Accent.Scale(0.75 + 0.45*beat)
-
-	digit := bigDigit(n, m.style.Glyphs.ASCII)
-	lines := make([]string, 0, len(digit)+2)
-	for _, l := range digit {
-		lines = append(lines, m.style.Text(color, l))
-	}
-	lines = append(lines, "", m.style.DimText("starting"+m.style.Glyphs.Ellipsis))
-	return lipgloss.JoinVertical(lipgloss.Center, lines...)
 }
 
 // bigDigit returns a five-line rendering of 1, 2 or 3 for the countdown.

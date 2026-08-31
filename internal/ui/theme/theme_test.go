@@ -446,12 +446,33 @@ func TestSetSelectsTheRequestedGlyphs(t *testing.T) {
 	if got := Set(false, true).Logo; got != SnailIcon {
 		t.Errorf("Logo = %q, want the snail", got)
 	}
-	if got := Set(false, false).Logo; got != "" {
-		t.Errorf("Logo = %q, want none without emoji support", got)
+	// There is always an icon of some kind, so the header keeps its shape;
+	// only which glyph is used changes.
+	if got := Set(false, false).Logo; got == "" || got == SnailIcon {
+		t.Errorf("Logo = %q, want a non-emoji stand-in", got)
 	}
 	// Asking for plain ASCII rules out emoji too.
-	if got := Set(true, true).Logo; got != "" {
-		t.Errorf("Logo = %q, want none in ASCII mode", got)
+	got := Set(true, true).Logo
+	if got == "" || got == SnailIcon {
+		t.Errorf("Logo = %q, want an ASCII stand-in", got)
+	}
+	for _, r := range got {
+		if r > 127 {
+			t.Errorf("the ASCII icon %q is not ASCII", got)
+		}
+	}
+}
+
+func TestEveryGlyphSetHasAnIcon(t *testing.T) {
+	// The icon is a capability decision, not a preference, so there is no
+	// configuration in which it is simply absent.
+	for _, g := range []Glyphs{Unicode, ASCIIGlyphs, Set(false, true)} {
+		if g.Logo == "" {
+			t.Error("a glyph set has no icon")
+		}
+		if n := len([]rune(g.Logo)); n != 1 {
+			t.Errorf("icon %q is %d runes; a single codepoint is what measures reliably", g.Logo, n)
+		}
 	}
 }
 

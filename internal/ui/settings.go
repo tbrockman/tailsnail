@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theolol/tailsnail/internal/proto"
 	"github.com/theolol/tailsnail/internal/store"
@@ -117,23 +118,6 @@ func (m *Model) initSettings() {
 			},
 		},
 		{
-			label: "emoji", help: "use the snail icon where the terminal supports it",
-			value: func(m *Model) string {
-				switch {
-				case m.style.Glyphs.Logo != "":
-					return "on  " + m.style.Glyphs.Logo
-				case !m.app.Settings.Emoji:
-					return "off"
-				default:
-					return "off (not supported here)"
-				}
-			},
-			adjust: func(m *Model, _ int) {
-				m.app.Settings.Emoji = !m.app.Settings.Emoji
-				m.restyle()
-			},
-		},
-		{
 			label: "auto-resize", help: "ask the terminal to grow to fit an arena that will not fit",
 			value: func(m *Model) string {
 				if m.app.Settings.AutoResize {
@@ -190,7 +174,7 @@ func (m *Model) restyle() {
 	env := theme.EnvFromOS()
 	mode := theme.Resolve(requested, env)
 	ascii := m.app.ASCIIFlag || m.app.Settings.ASCII
-	emoji := m.app.Settings.Emoji && theme.ResolveEmoji(m.app.EmojiFlag, env)
+	emoji := theme.ResolveEmoji(m.app.EmojiFlag, env)
 	m.style = theme.NewStyle(theme.ByName(m.app.Settings.Theme), mode, ascii, emoji)
 	m.settings.dirty = true
 }
@@ -314,15 +298,11 @@ func (m *Model) viewSettings() string {
 	g := m.style.Glyphs
 
 	// Every field occupies exactly one row. A value that would wrap breaks the
-	// alignment of everything below it and moves the popover's anchor, so it
-	// is trimmed instead.
-	panelWidth := min(max(m.width-8, 44), 66)
-	inner := panelWidth - 4 // border and padding
-
-	rows := make([]string, 0, len(m.settings.fields)+6)
-	// The panel's own top border sits above the first row.
+	// alignment of everything below it and moves the popover's anchor.
+	fieldRows := make([]string, 0, len(m.settings.fields))
 	const panelHeaderRows = 1
 	selectedRow := panelHeaderRows
+	selectedWidth := 0
 
 	for i, f := range m.settings.fields {
 		marker := "  "
@@ -330,25 +310,35 @@ func (m *Model) viewSettings() string {
 		if i == m.settings.cursor {
 			marker = m.style.Accent(g.Arrow + " ")
 			label = m.style.Text(th.Accent, pad(f.label, 16))
-			selectedRow = panelHeaderRows + len(rows)
 		}
-		rows = append(rows, truncateStyled(marker+label+m.style.Text(th.Fg, f.value(m)), inner))
+		row := marker + label + m.style.Text(th.Fg, f.value(m))
+		if i == m.settings.cursor {
+			selectedRow = panelHeaderRows + len(fieldRows)
+			selectedWidth = ansi.StringWidth(row)
+		}
+		fieldRows = append(fieldRows, row)
 	}
 
-	rows = append(rows, "", m.style.FaintText(strings.Repeat(g.Horizontal, 46)))
-	rows = append(rows, m.identityLines()...)
-	rows = append(rows, m.palettePreview())
+	footer := append(m.identityLines(), m.palettePreview())
+	inner := min(max(naturalWidth(append(append([]string{}, fieldRows...), footer...)), 40), max(m.width-8, 30))
+	for i := range fieldRows {
+		fieldRows[i] = truncateStyled(fieldRows[i], inner)
+	}
+	selectedWidth = min(selectedWidth, inner)
 
-	panel := m.style.Panel().Width(panelWidth).Render(
-		lipgloss.JoinVertical(lipgloss.Left, rows...))
+	rows := append(fieldRows, "", m.style.FaintText(strings.Repeat(g.Horizontal, inner)))
+	for _, line := range footer {
+		rows = append(rows, truncateStyled(line, inner))
+	}
+	// lipgloss counts padding inside Width, so a panel holding `inner` cells
+	// of content has to be built two wider than that.
+	panel := m.style.Panel().Width(inner + 2).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 
 	frame, top, left := m.place(panel, m.bodyHeight())
 	frame = m.withTooltip(frame, tooltip{
-		text:       m.settings.fields[m.settings.cursor].help,
-		row:        selectedRow,
-		panelTop:   top,
-		panelLeft:  left,
-		panelWidth: lipgloss.Width(panel),
+		text: m.settings.fields[m.settings.cursor].help,
+		row:  top + selectedRow,
+		col:  left + 2 + selectedWidth + 1,
 	})
 
 	title := "settings"

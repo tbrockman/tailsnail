@@ -10,9 +10,9 @@ package theme
 type Glyphs struct {
 	ASCII bool
 
-	// Logo is the application icon. It is empty unless the terminal is one
-	// known to render emoji at the width it reports, because a mis-measured
-	// cell shears every column after it.
+	// Logo is the application icon: the snail emoji where the terminal is known
+	// to render it at the width it reports, and a plain glyph everywhere else.
+	// It is never empty, so the header keeps its shape either way.
 	Logo string
 
 	// Heads holds one distinctive glyph per palette slot. Shape carries the
@@ -42,8 +42,9 @@ type Glyphs struct {
 	Cross    string
 	Arrow    string
 	Ellipsis string
-	// PointLeft and PointRight tie a popover to the row it describes.
-	PointLeft, PointRight string
+	// PointLeft, PointRight and PointUp tie a popover to the text it
+	// describes, whichever side there was room on.
+	PointLeft, PointRight, PointUp string
 	// Spinner frames for connecting and scanning states.
 	Spinner []string
 	// Meter fills a progress or countdown bar.
@@ -65,7 +66,10 @@ var Unicode = Glyphs{
 	Horizontal: "─", Vertical: "│",
 
 	Bullet: "•", Check: "✓", Cross: "✗", Arrow: "›", Ellipsis: "…",
-	PointLeft: "◂", PointRight: "▸",
+	PointLeft: "◂", PointRight: "▸", PointUp: "▴",
+	// A shell-like spiral stands in for the snail where emoji cannot be
+	// trusted to measure correctly.
+	Logo:      "◎",
 	Spinner:   []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
 	MeterFull: "█", MeterEmpty: "░",
 }
@@ -86,7 +90,8 @@ var ASCIIGlyphs = Glyphs{
 	Horizontal: "-", Vertical: "|",
 
 	Bullet: "*", Check: "x", Cross: "-", Arrow: ">", Ellipsis: "...",
-	PointLeft: "<", PointRight: ">",
+	PointLeft: "<", PointRight: ">", PointUp: "^",
+	Logo:      "@",
 	Spinner:   []string{"|", "/", "-", "\\"},
 	MeterFull: "#", MeterEmpty: ".",
 }
@@ -96,6 +101,10 @@ const SnailIcon = "🐌"
 
 // Set returns the glyph set for the requested modes. ASCII mode always wins
 // over emoji: someone asking for plain ASCII does not want a snail either.
+//
+// Emoji is not a preference the user is asked about — it is either going to
+// render correctly or it is not — so this is purely a capability decision, and
+// there is always an icon of some kind.
 func Set(ascii, emoji bool) Glyphs {
 	if ascii {
 		return ASCIIGlyphs
