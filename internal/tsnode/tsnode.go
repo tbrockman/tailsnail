@@ -26,6 +26,7 @@ import (
 	"tailscale.com/health"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/net/netns"
 	"tailscale.com/tsnet"
 
 	"github.com/theolol/tailsnail/internal/logring"
@@ -161,6 +162,15 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 	if hostname == "" {
 		return nil, fmt.Errorf("tsnode: %q does not reduce to a usable hostname", opts.Hostname)
 	}
+
+	// tsnet is a userspace/netstack node: it programs no routes of its own, so
+	// the netns loop protection has nothing to protect against. Leaving it on
+	// is actively harmful here. Unprivileged, netns cannot set SO_MARK and
+	// falls back to SO_BINDTODEVICE on the default route interface, which on
+	// Linux silently succeeds and then black-holes every TCP dial whenever a
+	// transparent proxy redirects outbound TCP to loopback. tailscaled makes
+	// the same call for its own userspace-networking mode.
+	netns.SetEnabled(false)
 
 	srv := &tsnet.Server{
 		Dir:      tsDir,
