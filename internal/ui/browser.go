@@ -285,6 +285,11 @@ func (m *Model) peerDetail(p discovery.Peer) string {
 			wrap = "wrap-around"
 		}
 		lines = append(lines, fmt.Sprintf("%d ticks/s, %s", a.Config.TickRate, wrap))
+
+		// Worth knowing before joining rather than after.
+		if needW, needH := arenaViewport(a.Config, a.Seats); m.width < needW || m.height < needH {
+			lines = append(lines, fmt.Sprintf("needs %d×%d to see all of this board", needW, needH))
+		}
 	}
 	return strings.Join(lines, "\n")
 }

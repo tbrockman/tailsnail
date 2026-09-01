@@ -51,6 +51,15 @@ type gameState struct {
 	// arenaClosed remembers the largest arena seen, so the shrinking-mode
 	// walls can be drawn closing in over the original grid.
 	fullArena game.Rect
+
+	// camera is the top-left of the visible window when the arena is larger
+	// than the terminal. It persists between frames so the view only moves
+	// when the player approaches its edge.
+	camera game.Point
+	// clipped records whether the last frame showed only part of the arena.
+	clipped bool
+	// window is the region the last frame drew, for the status line.
+	window game.Rect
 }
 
 // start initialises the screen for a new match.
@@ -219,8 +228,12 @@ func (m *Model) updateGame(msg tea.KeyMsg) tea.Cmd {
 // viewGame renders the arena, HUD and scoreboard.
 func (m *Model) viewGame() string {
 	st := m.displayState()
-	arena := m.renderArena(st)
 	hud := m.renderHUD(st)
+	// Whatever the body has left after the scoreboard and the arena's own
+	// frame is what the board gets to use.
+	availW := m.width - 2
+	availH := m.bodyHeight() - lipgloss.Height(hud) - 2
+	arena := m.renderArena(st, availW, availH)
 
 	body := lipgloss.JoinVertical(lipgloss.Center, hud, arena)
 	frame, top, left := m.place(body, m.bodyHeight())
@@ -231,6 +244,15 @@ func (m *Model) viewGame() string {
 	}
 
 	subtitle := duration(m.now.Sub(m.game.started))
+	if m.game.clipped {
+		// A player who cannot see the whole board should know that, rather
+		// than wondering where the other snakes went. It leads the subtitle
+		// because the header trims from the right on a narrow terminal, and
+		// this matters more than the clock.
+		subtitle = fmt.Sprintf("%d×%d of %d×%d  %s  %s",
+			m.game.window.Width(), m.game.window.Height(),
+			m.game.cfg.Width, m.game.cfg.Height, m.style.Glyphs.Bullet, subtitle)
+	}
 	hints := []hint{{"↑↓←→ / wasd", "steer"}, {"esc", "leave"}, {",", "settings"}}
 	if counting {
 		// The tick clock has not started, so elapsed time would read as zero.
@@ -294,6 +316,67 @@ func (m *Model) countdownBlock(n int, compact bool) string {
 	return lipgloss.JoinVertical(lipgloss.Center, lines...)
 }
 
+// minArenaView is the smallest window worth playing in. Below this the board
+// tells a player nothing useful, so the resize overlay takes over instead.
+const minArenaView = 24
+
+// scrollMarginX and scrollMarginY are how close the head may get to the edge
+// of the window before it scrolls. A camera locked to the head would slide the
+// whole board on every move, which is unreadable; a dead zone in the middle
+// keeps it still for most of the time.
+const (
+	scrollMarginX = 8
+	scrollMarginY = 4
+)
+
+// arenaWindow returns the region of the arena to draw: all of it when it fits,
+// and a window tracking the player when it does not.
+//
+// A host can configure an arena larger than a given player's terminal, and
+// that player may have no way to make their terminal bigger — it may already
+// fill the screen. Showing part of the board is a real disadvantage, but it is
+// the difference between playing and being locked out of a match already
+// joined.
+func (m *Model) arenaWindow(st game.State, availW, availH int) game.Rect {
+	w, h := m.game.cfg.Width, m.game.cfg.Height
+	viewW := min(w, max(availW, minArenaView))
+	viewH := min(h, max(availH, minArenaView/2))
+
+	if viewW >= w && viewH >= h {
+		m.game.clipped = false
+		m.game.window = game.Rect{X0: 0, Y0: 0, X1: w - 1, Y1: h - 1}
+		return m.game.window
+	}
+	m.game.clipped = true
+
+	cam := m.game.camera
+	cam.X = clampInt(cam.X, 0, max(w-viewW, 0))
+	cam.Y = clampInt(cam.Y, 0, max(h-viewH, 0))
+
+	if sn := st.SnakeByID(m.game.seat); sn != nil && len(sn.Body) > 0 {
+		head := sn.Head()
+		mx := min(scrollMarginX, max(viewW/2-1, 0))
+		my := min(scrollMarginY, max(viewH/2-1, 0))
+		if head.X-mx < cam.X {
+			cam.X = head.X - mx
+		}
+		if head.X+mx > cam.X+viewW-1 {
+			cam.X = head.X + mx - viewW + 1
+		}
+		if head.Y-my < cam.Y {
+			cam.Y = head.Y - my
+		}
+		if head.Y+my > cam.Y+viewH-1 {
+			cam.Y = head.Y + my - viewH + 1
+		}
+		cam.X = clampInt(cam.X, 0, max(w-viewW, 0))
+		cam.Y = clampInt(cam.Y, 0, max(h-viewH, 0))
+	}
+	m.game.camera = cam
+	m.game.window = game.Rect{X0: cam.X, Y0: cam.Y, X1: cam.X + viewW - 1, Y1: cam.Y + viewH - 1}
+	return m.game.window
+}
+
 // cell is one rendered arena position.
 type cell struct {
 	glyph string
@@ -306,13 +389,14 @@ type cell struct {
 // colour compression: an escape sequence is emitted only where the colour
 // actually changes. At 60 frames a second on a 120×48 arena that is the
 // difference between a few hundred escapes per frame and several thousand.
-func (m *Model) renderArena(st game.State) string {
+func (m *Model) renderArena(st game.State, availW, availH int) string {
 	g := m.style.Glyphs
 	th := m.style.Theme
 	w, h := m.game.cfg.Width, m.game.cfg.Height
 	if w <= 0 || h <= 0 {
 		return ""
 	}
+	win := m.arenaWindow(st, availW, availH)
 
 	buf := make([]cell, w*h)
 	for i := range buf {
@@ -398,11 +482,11 @@ func (m *Model) renderArena(st game.State) string {
 		}
 	}
 
-	return m.frameArena(buf, w, h, st)
+	return m.frameArena(buf, w, win)
 }
 
-// frameArena serialises the cell buffer inside a box border.
-func (m *Model) frameArena(buf []cell, w, h int, st game.State) string {
+// frameArena serialises the visible region of the cell buffer inside a border.
+func (m *Model) frameArena(buf []cell, stride int, win game.Rect) string {
 	g := m.style.Glyphs
 	th := m.style.Theme
 
@@ -415,22 +499,28 @@ func (m *Model) frameArena(buf []cell, w, h int, st game.State) string {
 			borderColor = th.Warn.Lerp(th.Wall, progress)
 		}
 	}
+	// A clipped view is marked on its own frame, so a player can tell at a
+	// glance that there is board they cannot see.
+	if m.game.clipped {
+		borderColor = borderColor.Mix(th.Warn)
+	}
 	border := m.style.SGR(borderColor)
 	reset := ""
 	if m.style.Colored() {
 		reset = theme.Reset
 	}
 
+	viewW, viewH := win.Width(), win.Height()
 	var b strings.Builder
-	b.Grow(w*h*3 + h*8)
+	b.Grow(viewW*viewH*3 + viewH*8)
 
-	b.WriteString(border + g.TopLeft + strings.Repeat(g.Horizontal, w) + g.TopRight + reset + "\n")
-	for y := range h {
+	b.WriteString(border + g.TopLeft + strings.Repeat(g.Horizontal, viewW) + g.TopRight + reset + "\n")
+	for y := win.Y0; y <= win.Y1; y++ {
 		b.WriteString(border + g.Vertical + reset)
 		last := theme.RGB{}
 		haveLast := false
-		for x := range w {
-			c := buf[y*w+x]
+		for x := win.X0; x <= win.X1; x++ {
+			c := buf[y*stride+x]
 			if !haveLast || c.color != last {
 				b.WriteString(m.style.SGR(c.color))
 				last, haveLast = c.color, true
@@ -439,7 +529,7 @@ func (m *Model) frameArena(buf []cell, w, h int, st game.State) string {
 		}
 		b.WriteString(reset + border + g.Vertical + reset + "\n")
 	}
-	b.WriteString(border + g.BottomLeft + strings.Repeat(g.Horizontal, w) + g.BottomRight + reset)
+	b.WriteString(border + g.BottomLeft + strings.Repeat(g.Horizontal, viewW) + g.BottomRight + reset)
 	return b.String()
 }
 

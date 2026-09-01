@@ -129,11 +129,11 @@ func (m *Model) viewRoom() string {
 			m.center(m.countdownBlock(st.Countdown, false), m.bodyHeight()), nil)
 	}
 
-	body := lipgloss.JoinVertical(lipgloss.Center,
-		m.rosterPanel(),
-		"",
-		m.readinessBanner(),
-	)
+	parts := []string{m.rosterPanel(), "", m.readinessBanner()}
+	if note := m.boardFitNote(st.Config, st.Config.MaxPlayers); note != "" {
+		parts = append(parts, "", note)
+	}
+	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
 	headline := st.Name + "  " + m.style.Glyphs.Bullet + "  " + m.configSummary(st.Config)
 	return m.chrome("lobby", headline, m.center(body, m.bodyHeight()), m.roomHints())
 }
@@ -304,7 +304,23 @@ func (m *Model) rosterPanel() string {
 			append([]string{m.style.Bold(title), ""}, rows...)...))
 }
 
-// readinessBanner tells the group what is holding the match up.
+// boardFitNote warns, before the match starts, that this terminal will not
+// show the whole board.
+//
+// Finding that out at kickoff is too late: by then the lobby has started and
+// the only options are to play half-blind or walk out. Said here, a player can
+// ask the host for a smaller arena, or make room, before readying up.
+func (m *Model) boardFitNote(cfg game.Config, players int) string {
+	needW, needH := arenaViewport(cfg, players)
+	if m.width >= needW && m.height >= needH {
+		return ""
+	}
+	// Trimmed rather than wrapped: a second line here would push the roster up
+	// and, on a short terminal, off the screen entirely.
+	note := fmt.Sprintf("part of this board will be off screen — %d×%d shows all of it", needW, needH)
+	return m.style.Text(m.style.Theme.Warn, m.style.Glyphs.Bullet+" ") +
+		m.style.DimText(truncate(note, max(m.width-6, 20)))
+}
 func (m *Model) readinessBanner() string {
 	st := m.room.state
 	th := m.style.Theme

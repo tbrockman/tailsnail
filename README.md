@@ -432,11 +432,28 @@ and a TUI of this kind is not usefully screen-reader accessible.
 **Layout** degrades rather than corrupting: a window too small for the current
 screen gets an overlay stating the required and current size, which itself
 scales down to a two-line form and finally to bare dimensions, so it fits any
-window it is describing. When a match starts, tailsnail also asks the terminal
-to grow to fit the arena (XTWINOPS `CSI 8 ; rows ; cols t`). Emulators that do
-not implement it ignore the request, so this is a convenience rather than
-something the layout depends on; it only ever grows a window, never shrinks
-one, and it can be turned off in settings.
+window it is describing.
+
+**A board bigger than your terminal still plays.** A host can pick an arena
+larger than someone else's screen, and that player may have no way to make
+their terminal bigger — it may already fill the display. So the arena scrolls:
+the view follows your snake, moving only when you approach its edge rather
+than sliding under you on every move. The frame is tinted and the header says
+`82×18 of 98×40`, because a player who cannot see the whole board should know
+that rather than wonder where everyone went. Seeing part of the board is a
+real disadvantage; being locked out of a match you have already joined is
+worse.
+
+The lobby browser and the lobby room both warn *before* you commit, naming the
+size that would show all of it — finding out at kickoff is too late. When a
+match starts tailsnail also asks the terminal to grow to fit the whole board
+(XTWINOPS `CSI 8 ; rows ; cols t`). Treat that as a bonus: many emulators
+never implemented it, most that did ship with it disabled, and a maximised
+window has nowhere to grow to. It only ever grows a window, never shrinks one,
+and it can be turned off in settings. The genuinely portable answer to a board
+that will not fit is to reduce the terminal's font size, which is what the
+overlay suggests — and escape leaves the match, which is the one action always
+available.
 
 ## Testing
 
@@ -467,7 +484,9 @@ go test ./...
   backoff, netmap-triggered re-probes, pruning, ordering, and concurrency
   bounds.
 - `internal/ui` — every screen rendered across both themes, both glyph sets and
-  all four colour depths, asserting no frame exceeds its viewport; that field
+  all four colour depths, asserting no frame exceeds its viewport; that the
+  scrolling view keeps the player on screen while never leaving the arena and
+  holds still while they are away from its edge; that field
   rows never shift as the selection moves and a notice changes exactly one
   line; that a dialog keeps its size while being scrolled and stops at the
   start of its content; that the countdown never lands on a spawned snake at

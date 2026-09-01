@@ -450,10 +450,12 @@ func (m *Model) handleSessionEvent(ev netplay.Event) tea.Cmd {
 	case netplay.GameStarted:
 		m.game.start(e, m.now)
 		m.screen = screenGame
-		// Ask the terminal to make room for the arena, if it is the sort that
-		// listens. Best-effort: the resize overlay still covers the rest.
-		needW, needH := m.requiredSize()
-		m.requestResize(needW, needH)
+		// Ask the terminal to make room for the whole board, not merely the
+		// scrolling minimum — seeing all of it is the point of asking. Purely
+		// best-effort: many terminals do not implement the request, and one
+		// already filling the screen has nowhere to grow, which is what the
+		// scrolling view is for.
+		m.requestResize(arenaViewport(e.Config, len(e.Players)))
 	case netplay.Tick:
 		m.game.apply(e.State, m.now)
 	case netplay.MatchOver:
@@ -579,6 +581,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// can be typed into text fields.
 	if msg.String() == "ctrl+c" {
 		return m.quit()
+	}
+	// While the resize overlay is up the screen beneath is not readable, so
+	// only the two ways out of it are honoured. Leaving has to work here: it
+	// is the one action available to somebody whose terminal cannot grow.
+	if _, tooSmall := m.resizeOverlay(); tooSmall {
+		switch {
+		case msg.String() == "q":
+			return m.quit()
+		case key.Matches(msg, m.keys.Back) && m.session != nil:
+			m.leaveSession("left: the terminal is too small for this match")
+			m.screen = screenBrowser
+			return nil
+		}
+		return nil
 	}
 	// Settings are reachable from every screen, except while a text field has
 	// the keyboard — a comma typed into a name is a comma.

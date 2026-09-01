@@ -499,7 +499,7 @@ func TestGameArenaHasExactlyTheConfiguredRows(t *testing.T) {
 	cfg.Width, cfg.Height = 30, 14
 	m := gameFixture(t, 3, cfg)
 
-	arena := stripANSI(m.renderArena(m.game.state))
+	arena := stripANSI(m.renderArena(m.game.state, cfg.Width, cfg.Height))
 	lines := strings.Split(arena, "\n")
 	if got, want := len(lines), cfg.Height+2; got != want {
 		t.Fatalf("arena is %d lines, want %d (height plus two borders)", got, want)
@@ -851,20 +851,43 @@ func TestResizeOverlayStatesTheTargetSizeWhileItFits(t *testing.T) {
 	}
 }
 
-func TestGameShowsResizeOverlayForAnOversizedArena(t *testing.T) {
+func TestAnOversizedArenaScrollsRatherThanLockingThePlayerOut(t *testing.T) {
+	// A host can choose a board bigger than someone's screen, and that player
+	// may have no way to make their terminal larger. Being unable to play a
+	// match already joined is not an acceptable outcome, so the board scrolls.
 	cfg := game.DefaultConfig()
 	cfg.Width, cfg.Height = 100, 40
 	m := gameFixture(t, 2, cfg)
 	m.width, m.height = 80, 24
 
 	view := m.View()
-	checkFrame(t, m, "game/too small", view)
+	checkFrame(t, m, "game/scrolled", view)
 	plain := stripANSI(view)
-	if !strings.Contains(plain, "too small") {
-		t.Fatalf("an arena larger than the window did not trigger the overlay:\n%s", plain)
+	if strings.Contains(plain, "too small") {
+		t.Fatalf("an oversized arena locked the player out instead of scrolling:\n%s", plain)
 	}
-	if !strings.Contains(plain, "104") {
-		t.Errorf("the overlay does not state the required width:\n%s", plain)
+	if !m.game.clipped {
+		t.Fatal("the view is not marked as clipped")
+	}
+	if !strings.Contains(plain, "of 100×40") {
+		t.Errorf("the player is not told they are seeing part of the board:\n%s", plain)
+	}
+}
+
+func TestTheResizeOverlayStillAppearsBelowThePlayableMinimum(t *testing.T) {
+	cfg := game.DefaultConfig()
+	m := gameFixture(t, 2, cfg)
+	// Small enough to be unplayable, but with room for the overlay's full form.
+	m.width, m.height = 52, 14
+
+	plain := stripANSI(m.View())
+	checkFrame(t, m, "game/unplayable", m.View())
+	if !strings.Contains(plain, "too small") {
+		t.Fatalf("a window too small to play in did not trigger the overlay:\n%s", plain)
+	}
+	// And it suggests something a full-screen terminal can actually do.
+	if !strings.Contains(plain, "font size") {
+		t.Errorf("the overlay only suggests resizing, which a maximised window cannot do:\n%s", plain)
 	}
 }
 
@@ -937,7 +960,7 @@ func TestArenaEmitsNoEscapesWithoutColor(t *testing.T) {
 	m.app.ColorFlag = theme.ModeNone
 	m.restyle()
 
-	if arena := m.renderArena(m.game.state); strings.ContainsRune(arena, 0x1b) {
+	if arena := m.renderArena(m.game.state, 200, 100); strings.ContainsRune(arena, 0x1b) {
 		t.Error("the arena emitted escape sequences with colour disabled")
 	}
 }
@@ -1829,5 +1852,180 @@ func assertHangsLeft(t *testing.T, m *Model, want string) {
 	// With the box given room, text that fits on one line must not be wrapped.
 	if !strings.Contains(view, want) {
 		t.Errorf("%q was wrapped or is missing:\n%s", want, view)
+	}
+}
+
+func TestTheCameraShowsTheWholeArenaWhenItFits(t *testing.T) {
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height = 40, 20
+	m := gameFixture(t, 2, cfg)
+	m.width, m.height = 120, 40
+
+	m.renderArena(m.game.state, 100, 30)
+	if m.game.clipped {
+		t.Fatal("a board that fits was reported as clipped")
+	}
+	if got := m.game.window; got.Width() != cfg.Width || got.Height() != cfg.Height {
+		t.Errorf("window = %+v, want the whole %dx%d arena", got, cfg.Width, cfg.Height)
+	}
+}
+
+func TestTheCameraStaysStillWhileThePlayerIsAwayFromTheEdge(t *testing.T) {
+	// A camera locked to the head slides the whole board on every move, which
+	// is unreadable. It should only move when the player nears the edge.
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height = 100, 40
+	cfg.Wrap = false
+	m := gameFixture(t, 1, cfg)
+
+	const viewW, viewH = 60, 20
+	// Start the snake in the middle and let the camera settle.
+	place := func(x, y int) {
+		m.game.state.Snakes[0].Body = []game.Point{{X: x, Y: y}, {X: x - 1, Y: y}}
+		m.renderArena(m.game.state, viewW, viewH)
+	}
+	place(50, 20)
+	settled := m.game.camera
+	// The dead zone is the middle of the window, away from the scroll margins.
+	midX := settled.X + viewW/2
+	midY := settled.Y + viewH/2
+	place(midX, midY)
+	settled = m.game.camera
+
+	// Small moves well inside the window must not shift it.
+	for _, d := range []int{1, 2, -1, -2} {
+		place(midX+d, midY)
+		if m.game.camera != settled {
+			t.Fatalf("the camera moved to %+v for a step of %d cells inside the dead zone", m.game.camera, d)
+		}
+	}
+}
+
+func TestTheCameraFollowsThePlayerToTheEdge(t *testing.T) {
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height = 100, 40
+	cfg.Wrap = false
+	m := gameFixture(t, 1, cfg)
+
+	const viewW, viewH = 60, 20
+	place := func(x, y int) game.Rect {
+		m.game.state.Snakes[0].Body = []game.Point{{X: x, Y: y}, {X: x - 1, Y: y}}
+		return m.arenaWindow(m.game.state, viewW, viewH)
+	}
+
+	// Walk from one side of the arena to the other; the player must stay in
+	// view the whole way, and the window must never leave the arena.
+	for x := 2; x < cfg.Width-2; x++ {
+		win := place(x, 20)
+		if x < win.X0 || x > win.X1 {
+			t.Fatalf("the player at x=%d is outside the window %+v", x, win)
+		}
+		if win.X0 < 0 || win.X1 >= cfg.Width {
+			t.Fatalf("the window %+v left the arena", win)
+		}
+		if win.Width() != viewW || win.Height() != viewH {
+			t.Fatalf("window is %dx%d, want %dx%d", win.Width(), win.Height(), viewW, viewH)
+		}
+	}
+	// And the same vertically.
+	for y := 2; y < cfg.Height-2; y++ {
+		win := place(50, y)
+		if y < win.Y0 || y > win.Y1 {
+			t.Fatalf("the player at y=%d is outside the window %+v", y, win)
+		}
+		if win.Y0 < 0 || win.Y1 >= cfg.Height {
+			t.Fatalf("the window %+v left the arena", win)
+		}
+	}
+}
+
+func TestTheScrolledArenaRendersExactlyItsWindow(t *testing.T) {
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height = 100, 40
+	m := gameFixture(t, 4, cfg)
+
+	for _, avail := range []struct{ w, h int }{{40, 12}, {60, 20}, {99, 39}, {200, 100}} {
+		arena := stripANSI(m.renderArena(m.game.state, avail.w, avail.h))
+		lines := strings.Split(arena, "\n")
+		win := m.game.window
+
+		if got, want := len(lines), win.Height()+2; got != want {
+			t.Errorf("avail %dx%d: arena is %d lines, want %d", avail.w, avail.h, got, want)
+		}
+		for i, l := range lines {
+			if got, want := ansi.StringWidth(l), win.Width()+2; got != want {
+				t.Errorf("avail %dx%d: line %d is %d cells, want %d", avail.w, avail.h, i, got, want)
+			}
+		}
+		if win.Width() > avail.w && win.Width() < cfg.Width {
+			t.Errorf("avail %dx%d: window %d wide exceeds the space available", avail.w, avail.h, win.Width())
+		}
+	}
+}
+
+func TestTheLobbyWarnsBeforeTheBoardTurnsOutTooBig(t *testing.T) {
+	m := newTestModel(t)
+	m.node = runningNode()
+	m.screen = screenRoom
+	m.session = &fakeSession{host: true}
+
+	lobby := sampleLobby(proto.PhaseOpen, 2)
+	lobby.Config.Width, lobby.Config.Height = 110, 44
+	m.room.apply(lobby)
+	m.width, m.height = 80, 24
+
+	plain := stripANSI(m.View())
+	checkFrame(t, m, "room/board too big", m.View())
+	if !strings.Contains(plain, "off screen") {
+		t.Errorf("the lobby does not warn that the board will not fit:\n%s", plain)
+	}
+
+	// And says nothing when it does fit.
+	m.width, m.height = 160, 60
+	if strings.Contains(stripANSI(m.View()), "off screen") {
+		t.Error("the lobby warns about a board that fits perfectly well")
+	}
+}
+
+func TestTheBrowserWarnsAboutAnOversizedLobby(t *testing.T) {
+	m := newTestModel(t)
+	m.node = runningNode()
+	m.screen = screenBrowser
+	m.width, m.height = 90, 24
+
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height = 110, 44
+	m.browser.snapshot = discovery.Snapshot{At: time.Now(), Candidates: 1, Peers: []discovery.Peer{
+		{NodeID: "n1", DNSName: "grace.ts.net", Short: "grace", DisplayName: "grace", LastSeen: time.Now(),
+			Advert: &proto.Advert{LobbyID: "l1", Name: "big board", Config: cfg, Seats: 4, Taken: 1, Phase: proto.PhaseOpen}},
+	}}
+
+	plain := stripANSI(m.View())
+	checkFrame(t, m, "browser/oversized lobby", m.View())
+	if !strings.Contains(plain, "to see all of this board") {
+		t.Errorf("the browser does not flag a lobby too big for this terminal:\n%s", plain)
+	}
+}
+
+func TestLeavingWorksFromTheResizeOverlay(t *testing.T) {
+	// The one action available to somebody whose terminal cannot grow.
+	m, sess := sessionModel(t, false)
+	m.screen = screenGame
+	m.game.start(netplay.GameStarted{
+		Config: game.DefaultConfig(), Seat: 0, Players: samplePlayers(2),
+	}, m.now)
+	m.width, m.height = 40, 10
+
+	if _, tooSmall := m.resizeOverlay(); !tooSmall {
+		t.Fatal("the overlay is not showing; the test proves nothing")
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(*Model)
+
+	if !sess.closed {
+		t.Fatal("escape did not leave the match from the resize overlay")
+	}
+	if m.screen != screenBrowser {
+		t.Errorf("screen = %v after leaving, want the browser", m.screen)
 	}
 }

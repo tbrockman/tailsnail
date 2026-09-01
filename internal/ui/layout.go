@@ -160,20 +160,43 @@ func (m *Model) toastLine() string {
 }
 
 // center places content in the middle of the available body area.
+//
+// It clips first: lipgloss.Place pads a short body but never trims a tall one,
+// so a body that outgrew its space would push the help bar off the bottom of
+// the screen rather than being cut.
 func (m *Model) center(body string, height int) string {
+	if lines := strings.Split(body, "\n"); len(lines) > height {
+		body = strings.Join(lines[:max(height, 0)], "\n")
+	}
 	return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, body)
 }
 
-// arenaViewport is the terminal size a match on the given configuration needs.
-//
-// The host form and the resize overlay both quote it, so what the form
-// promises is exactly what the game screen will go on to demand.
+// arenaViewport is the terminal size needed to see the whole of a given
+// arena at once. Below it the board still plays, through a window that
+// follows the player; this is what the host form quotes as the ideal.
 func arenaViewport(cfg game.Config, players int) (int, int) {
-	// The arena plus its frame, and either side of the panel.
+	// The arena plus its frame, and a little either side.
 	w := max(minWidth, cfg.Width+4)
 	// The arena and its frame, the scoreboard — whose height depends on how
 	// many entries fit across this width — and the chrome.
 	h := max(minHeight, cfg.Height+2+hudRowsAt(players, w)+chromeRows)
+	return w, h
+}
+
+// gameViewport is the smallest terminal a match can actually be played in.
+//
+// It is not the size of the arena: an arena larger than this scrolls, so what
+// matters is having a window worth playing in. A host can pick a board bigger
+// than somebody's screen, and that player may have no way to make their
+// terminal larger — so being locked out of a match already joined is not an
+// acceptable outcome.
+func gameViewport(players int) (int, int) {
+	w := max(minWidth, minArenaView+2)
+	// The scoreboard is measured at the width being demanded, not the current
+	// one: a wider terminal only ever needs fewer rows, so this is both safe
+	// and stable. Measuring it against the current width would let shrinking
+	// to exactly the required size raise the requirement again.
+	h := max(minHeight, minArenaView/2+2+hudRowsAt(players, w)+chromeRows)
 	return w, h
 }
 
@@ -213,13 +236,21 @@ func (m *Model) resizeOverlay() (string, bool) {
 		return m.style.Text(th.Ok, s)
 	}
 
+	// "Make the window bigger" is useless advice to somebody whose terminal
+	// already fills the screen, which is exactly when this tends to appear.
+	remedy := "make the window bigger, or reduce the font size"
+	escape := "q quits"
+	if m.session != nil {
+		escape = "esc leaves, q quits"
+	}
 	full := []string{
 		m.style.Text(th.Warn, g.Bullet+" this window is too small"),
 		"",
 		m.style.DimText("current  ") + dim(m.width, needW) + m.style.DimText(" × ") + dim(m.height, needH),
 		m.style.DimText("needed   ") + m.style.Text(th.Fg, fmt.Sprintf("%d × %d", needW, needH)),
 		"",
-		m.style.FaintText("resize the terminal, or press q to quit"),
+		m.style.FaintText(remedy),
+		m.style.FaintText(escape),
 	}
 	compact := []string{
 		m.style.Text(th.Warn, "window too small"),
@@ -260,11 +291,17 @@ func (m *Model) resizeOverlay() (string, bool) {
 
 // requiredSize is the viewport the current screen needs.
 func (m *Model) requiredSize() (int, int) {
-	// Only the arena itself needs room for the grid; the results dialog is
+	// Only the arena has a size of its own to satisfy; the results dialog is
 	// panel-sized and must not inherit that requirement.
 	if m.screen == screenGame {
-		if aw, _ := m.game.arenaCells(); aw > 0 {
-			return arenaViewport(m.game.cfg, len(m.game.players))
+		if cells, _ := m.game.arenaCells(); cells > 0 {
+			// Either enough room for the whole board, or enough for a window
+			// worth playing in — whichever is less. A small arena fits in
+			// fewer rows than the scrolling minimum, and demanding the
+			// minimum anyway would lock a player out of a board that fits.
+			idealW, idealH := arenaViewport(m.game.cfg, len(m.game.players))
+			minW, minH := gameViewport(len(m.game.players))
+			return min(idealW, minW), min(idealH, minH)
 		}
 	}
 	return minWidth, minHeight
