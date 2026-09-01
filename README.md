@@ -499,10 +499,24 @@ dashed `╎` or `╌` across the board itself. The dashes are laid down before
 anything else, so a snake, a pellet or an effect always paints over them — the
 mark explains the topology and can never hide something that matters.
 
-Walled arenas keep a hard edge, in both senses: there is nothing past a wall
-to show, so the view stops there. It still tracks the player exactly up to that
-point. And once the shrinking mode has closed the walls in, the ground outside
-them is real and has to stay visible, so that falls back to a clamped view too.
+What counts as "the world" depends on whether it wraps, which matters most in
+the shrinking mode. With wrap-around the world is the *live* arena: the walls
+closing in make the torus smaller, and a smaller torus is still a torus, so the
+view keeps following the player and the fold marks simply move inward with the
+boundary. The view shrinks along with the world, because a window wider than
+the world would show the same snake twice. The ground the walls have closed
+over has not merely been fenced off — it has stopped being part of the world,
+so there is nothing out there to look at.
+
+Without wrap-around the world stays the whole grid, because the ground the
+walls have closed over is exactly what a player needs to see coming, and a
+wall is a real edge: the view stops at it, having tracked the player exactly
+up to that point.
+
+The arena arrives over the network, so the renderer does not assume it is well
+formed. Whatever turns up is clipped to the grid the cell buffer was allocated
+for, which repairs both an inverted rect and one larger than the grid. A bad
+frame should look wrong, not crash.
 
 The lobby browser and the lobby room both warn *before* you commit, naming the
 size that would show all of it — finding out at kickoff is too late. When a

@@ -59,8 +59,12 @@ type gameState struct {
 	// clipped records whether the last frame showed only part of the arena.
 	clipped bool
 	// window is the region the last frame drew. On a wrapping axis it may run
-	// past the arena's bounds; cells are looked up modulo the arena.
+	// past the world's bounds; cells are looked up modulo it.
 	window game.Rect
+	// world is the region the camera operates over. With wrap-around that is
+	// the live arena, which the shrinking mode contracts; without it, the full
+	// grid, so the ground the walls have closed over stays visible.
+	world game.Rect
 	// wrapX and wrapY record which axes the last frame drew seamlessly.
 	wrapX, wrapY bool
 }
@@ -254,7 +258,7 @@ func (m *Model) viewGame() string {
 		// this matters more than the clock.
 		subtitle = fmt.Sprintf("%d×%d of %d×%d  %s  %s",
 			m.game.window.Width(), m.game.window.Height(),
-			m.game.cfg.Width, m.game.cfg.Height, m.style.Glyphs.Bullet, subtitle)
+			m.game.world.Width(), m.game.world.Height(), m.style.Glyphs.Bullet, subtitle)
 	}
 	hints := []hint{{"↑↓←→ / wasd", "steer"}, {"esc", "leave"}, {",", "settings"}}
 	if counting {
@@ -283,12 +287,13 @@ func (m *Model) overlayCountdown(frame, body, arena, hud string, top, left int) 
 	interiorTop := top + lipgloss.Height(hud) + 1
 	interiorLeft := left + (lipgloss.Width(body)-lipgloss.Width(arena))/2 + 1
 
-	// Where the player sits inside the view.
+	// Where the player sits inside the view, measured around the world rather
+	// than the grid, since the two differ once the walls have closed in.
 	px, py := viewW/2, viewH/2
 	if sn := m.game.state.SnakeByID(m.game.seat); sn != nil && len(sn.Body) > 0 {
 		head := sn.Head()
-		px = mod(head.X-win.X0, m.game.cfg.Width)
-		py = mod(head.Y-win.Y0, m.game.cfg.Height)
+		px = mod(head.X-win.X0, max(m.game.world.Width(), 1))
+		py = mod(head.Y-win.Y0, max(m.game.world.Height(), 1))
 	}
 
 	// Sit one row clear of the head, dropping below it when there is no room
@@ -362,40 +367,71 @@ const minArenaView = 24
 // not a fact about the game. The window is never wider than the arena, so no
 // cell — and no snake — can appear in two places at once.
 func (m *Model) arenaWindow(st game.State, availW, availH int) game.Rect {
-	w, h := m.game.cfg.Width, m.game.cfg.Height
-	viewW := min(w, max(availW, minArenaView))
-	viewH := min(h, max(availH, minArenaView/2))
+	// What counts as "the world" depends on whether it wraps.
+	//
+	// With wrap-around the world is the live arena. The shrinking mode makes
+	// that arena smaller, and a smaller torus is still a torus — the ground
+	// outside it is not merely walled off, it has stopped being part of the
+	// world at all, so there is nothing out there to look at.
+	//
+	// Without wrap-around the world is the whole grid, because the ground the
+	// walls have closed over is exactly what a player needs to see coming.
+	world := m.game.fullArena
+	if m.game.cfg.Wrap {
+		world = st.Arena
+	}
+	// The arena travels over the network, so it is not this code's place to
+	// assume it is well formed. Clipping it to the grid the cell buffer was
+	// actually allocated for repairs both an inverted rect, which would give a
+	// negative view size, and one larger than the grid, which would index off
+	// the end of the buffer. A bad frame should look wrong, not crash.
+	world = clipToGrid(world, m.game.cfg.Width, m.game.cfg.Height)
+	m.game.world = world
+	worldW, worldH := world.Width(), world.Height()
 
-	// Seamless rendering needs the arena to be the whole grid: once the
-	// shrinking mode has closed the walls in, the ground outside them is real
-	// and has to stay visible, so that falls back to a clamped view.
-	seamless := m.game.cfg.Wrap && st.Arena == m.game.fullArena
-	m.game.wrapX, m.game.wrapY = seamless, seamless
-	m.game.clipped = viewW < w || viewH < h
+	// The view can never be larger than the world, or a cell — and a snake —
+	// would appear in two places at once. As the world shrinks, so does this.
+	viewW := max(min(worldW, max(availW, minArenaView)), 1)
+	viewH := max(min(worldH, max(availH, minArenaView/2)), 1)
+
+	m.game.wrapX = m.game.cfg.Wrap && worldW > 0
+	m.game.wrapY = m.game.cfg.Wrap && worldH > 0
+	m.game.clipped = viewW < worldW || viewH < worldH
 
 	// Centre on our own snake. A dead player's last position is as good an
 	// anchor as any, and keeping it still is less jarring than snapping the
 	// board somewhere else at the moment they are eliminated.
-	origin := game.Point{X: (w - viewW) / 2, Y: (h - viewH) / 2}
+	origin := game.Point{X: world.X0 + (worldW-viewW)/2, Y: world.Y0 + (worldH-viewH)/2}
 	if sn := st.SnakeByID(m.game.seat); sn != nil && len(sn.Body) > 0 {
 		head := sn.Head()
 		origin = game.Point{X: head.X - viewW/2, Y: head.Y - viewH/2}
 	}
 
 	if m.game.wrapX {
-		origin.X = mod(origin.X, w)
+		origin.X = world.X0 + mod(origin.X-world.X0, worldW)
 	} else {
-		origin.X = clampInt(origin.X, 0, max(w-viewW, 0))
+		origin.X = clampInt(origin.X, world.X0, max(world.X1-viewW+1, world.X0))
 	}
 	if m.game.wrapY {
-		origin.Y = mod(origin.Y, h)
+		origin.Y = world.Y0 + mod(origin.Y-world.Y0, worldH)
 	} else {
-		origin.Y = clampInt(origin.Y, 0, max(h-viewH, 0))
+		origin.Y = clampInt(origin.Y, world.Y0, max(world.Y1-viewH+1, world.Y0))
 	}
 
 	m.game.camera = origin
 	m.game.window = game.Rect{X0: origin.X, Y0: origin.Y, X1: origin.X + viewW - 1, Y1: origin.Y + viewH - 1}
 	return m.game.window
+}
+
+// clipToGrid confines a rect to a grid of the given size, keeping it non-empty
+// and correctly ordered whatever arrived.
+func clipToGrid(r game.Rect, width, height int) game.Rect {
+	maxX, maxY := max(width-1, 0), max(height-1, 0)
+	r.X0 = clampInt(r.X0, 0, maxX)
+	r.Y0 = clampInt(r.Y0, 0, maxY)
+	r.X1 = clampInt(r.X1, r.X0, maxX)
+	r.Y1 = clampInt(r.Y1, r.Y0, maxY)
+	return r
 }
 
 // mod is a modulo that returns a non-negative result, which is what wrapping
@@ -438,15 +474,17 @@ func (m *Model) renderArena(st game.State, availW, availH int) string {
 	}
 	// Where the world folds, dash the ground. This is laid down first so a
 	// snake, a pellet or an effect always paints over it: the mark explains
-	// the topology and must never hide anything that matters.
+	// the topology and must never hide anything that matters. The fold is at
+	// the edge of the live world, which the shrinking mode moves inward.
+	world := m.game.world
 	if m.game.wrapX {
-		for y := range h {
-			buf[y*w] = cell{glyph: g.FoldVertical, color: th.Faint}
+		for y := world.Y0; y <= world.Y1; y++ {
+			buf[y*w+world.X0] = cell{glyph: g.FoldVertical, color: th.Faint}
 		}
 	}
 	if m.game.wrapY {
-		for x := range w {
-			buf[x] = cell{glyph: g.FoldHorizontal, color: th.Faint}
+		for x := world.X0; x <= world.X1; x++ {
+			buf[world.Y0*w+x] = cell{glyph: g.FoldHorizontal, color: th.Faint}
 		}
 	}
 	at := func(p game.Point) int {
@@ -541,7 +579,6 @@ func (m *Model) renderArena(st game.State, availW, availH int) string {
 func (m *Model) frameArena(buf []cell, stride int, win game.Rect) string {
 	g := m.style.Glyphs
 	th := m.style.Theme
-	w, h := m.game.cfg.Width, m.game.cfg.Height
 
 	// The border pulses when the arena is contracting, so the closing walls
 	// announce themselves before they reach anybody.
@@ -564,13 +601,18 @@ func (m *Model) frameArena(buf []cell, stride int, win game.Rect) string {
 		reset = theme.Reset
 	}
 
-	viewW, viewH := win.Width(), win.Height()
+	world := m.game.world
+	viewW, viewH := max(win.Width(), 0), max(win.Height(), 0)
 	var b strings.Builder
 	b.Grow(viewW*viewH*3 + viewH*8)
 
 	// seamAtColumn and seamAtRow report where the world folds inside the view.
-	seamAtColumn := func(i int) bool { return m.game.wrapX && mod(win.X0+i, w) == 0 }
-	seamAtRow := func(i int) bool { return m.game.wrapY && mod(win.Y0+i, h) == 0 }
+	seamAtColumn := func(i int) bool {
+		return m.game.wrapX && mod(win.X0+i-world.X0, world.Width()) == 0
+	}
+	seamAtRow := func(i int) bool {
+		return m.game.wrapY && mod(win.Y0+i-world.Y0, world.Height()) == 0
+	}
 
 	horizontal := func(left, right, mark string) string {
 		var row strings.Builder
@@ -590,7 +632,7 @@ func (m *Model) frameArena(buf []cell, stride int, win game.Rect) string {
 	for y := win.Y0; y <= win.Y1; y++ {
 		sy := y
 		if m.game.wrapY {
-			sy = mod(y, h)
+			sy = world.Y0 + mod(y-world.Y0, world.Height())
 		}
 		edge := g.Vertical
 		edgeStyle := border
@@ -604,7 +646,7 @@ func (m *Model) frameArena(buf []cell, stride int, win game.Rect) string {
 		for x := win.X0; x <= win.X1; x++ {
 			sx := x
 			if m.game.wrapX {
-				sx = mod(x, w)
+				sx = world.X0 + mod(x-world.X0, world.Width())
 			}
 			c := buf[sy*stride+sx]
 			if !haveLast || c.color != last {
