@@ -60,10 +60,8 @@ The binaries are static and cgo-free, so there is nothing to install alongside
 them — and because the Tailscale node is embedded, nothing to configure either.
 Verify a download against the `SHA256SUMS` file attached to the same release.
 
-They are built without a symbol table or DWARF, and with the Tailscale
-features a game cannot use compiled out — roughly 7 MB compressed, 18 MB on
-disk. One of those omissions is `logtail`, so a release binary has no code
-path for uploading logs to Tailscale's servers at all.
+They are built without a symbol table or DWARF: roughly 8 MB compressed, 21 MB
+on disk.
 
 On macOS, Gatekeeper blocks unsigned downloads the first time. Either
 right-click the binary and choose Open, or clear the quarantine flag:
@@ -602,16 +600,23 @@ The same archives can be built locally with `./scripts/build-release.sh 0.2.0`,
 which is what CI calls, so a release can be reproduced without pushing a tag.
 
 That script is also where the build flags live. `-s -w` drop the symbol table
-and DWARF, which production users have no use for; `-trimpath` keeps absolute
-build paths out of the binary, so the same source at the same commit produces
-the same bytes on any machine; and a list of `ts_omit_` tags removes the
-Tailscale features tailsnail cannot use, which is about 15% of the binary. The
-flake keeps the same list, so `nix build` and a release archive agree.
+and DWARF, which production users have no use for, and `-trimpath` keeps
+absolute build paths out of the binary, so the same source at the same commit
+produces the same bytes on any machine. Both remove *information* rather than
+code, so neither can change how the binary behaves.
 
-Two features are conspicuously absent from that list: `serve` and `acme`
-cannot be omitted, because `tsnet` itself references `SetServeConfig` and
-`GetCertificate`. `go install` builds without any of the tags, which is
-correct — it just produces a slightly larger binary.
+Tailscale also offers `ts_omit_` build tags that compile out features a game
+cannot use, which measured at about 15% of the binary — 8.0 MB down to 6.8 MB
+compressed. They are deliberately not used. A megabyte off a download is
+imperceptible, whereas disabling code paths inside the dependency that
+actually reaches the network risks a failure that appears only on someone
+else's machine, in an environment that cannot be tested here, during
+onboarding — the worst possible moment for a confusing failure. The trade is
+a benefit nobody notices against a cost that is hard to find.
+
+That is a judgement about *this* project, not about the tags. If binary size
+ever becomes a real complaint, the list is recoverable from the history and
+can be reintroduced with per-platform testing behind it.
 
 `ci` runs on every push and pull request: gofmt, `go vet`, the suite under the
 race detector on both Linux and macOS, a cross-compile of every release
