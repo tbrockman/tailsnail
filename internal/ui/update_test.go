@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -1067,5 +1068,33 @@ func TestTheNameFieldTracksItsContents(t *testing.T) {
 		if widths[i] <= widths[i-1] {
 			t.Fatalf("the field did not grow with its contents: %v", widths)
 		}
+	}
+}
+
+func TestUnreadableRecordsAreSurfacedAtStartup(t *testing.T) {
+	// A player whose history is incomplete should be told, not left to wonder
+	// where their matches went. Records are skipped when their contents no
+	// longer hash to what their signatures cover — most often because the
+	// record predates a change to the match schema.
+	m := newTestModel(t)
+	m.app.StoreProblems = []error{errors.New("bad record"), errors.New("another")}
+	m.Init()
+
+	if !m.toast.active(m.now) {
+		t.Fatal("nothing was said about the records that could not be read")
+	}
+	if !strings.Contains(m.toast.text, "2 stored matches") {
+		t.Errorf("notice = %q, want it to say how many were skipped", m.toast.text)
+	}
+	if m.toast.kind != toastWarn {
+		t.Errorf("notice kind = %v, want a warning", m.toast.kind)
+	}
+}
+
+func TestAHealthyStoreSaysNothingAtStartup(t *testing.T) {
+	m := newTestModel(t)
+	m.Init()
+	if m.toast.active(m.now) {
+		t.Errorf("a clean start produced a notice: %q", m.toast.text)
 	}
 }

@@ -206,6 +206,12 @@ func runTUI(opts options) error {
 	for _, p := range problems {
 		log.Logf("%v", p)
 	}
+	if len(problems) > 0 {
+		// Worth saying out loud. A record is skipped when its contents no
+		// longer hash to what its signatures cover, which most often means the
+		// record predates a change to the match schema.
+		log.Logf("%d stored match records could not be read and were skipped", len(problems))
+	}
 
 	// A single context governs every goroutine, so quitting tears the whole
 	// program down in one move.
@@ -248,18 +254,19 @@ func runTUI(opts options) error {
 	go prober.Run(ctx)
 
 	app := &ui.App{
-		Ctx:       ctx,
-		Node:      node,
-		Server:    server,
-		Prober:    prober,
-		Store:     records,
-		Ident:     ident,
-		Log:       log,
-		StateDir:  stateDir,
-		Settings:  settings,
-		ASCIIFlag: opts.ascii,
-		ColorFlag: colorMode,
-		EmojiFlag: emojiMode,
+		Ctx:           ctx,
+		Node:          node,
+		Server:        server,
+		Prober:        prober,
+		Store:         records,
+		Ident:         ident,
+		Log:           log,
+		StateDir:      stateDir,
+		Settings:      settings,
+		StoreProblems: problems,
+		ASCIIFlag:     opts.ascii,
+		ColorFlag:     colorMode,
+		EmojiFlag:     emojiMode,
 	}
 
 	program := tea.NewProgram(ui.New(app), tea.WithAltScreen(), tea.WithContext(ctx))

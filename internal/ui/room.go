@@ -239,11 +239,7 @@ func (m *Model) configSummary(cfg game.Config) string {
 	if cfg.Wrap {
 		walls = "wrap"
 	}
-	mode := "classic"
-	if cfg.Mode == game.ModeShrink {
-		mode = "shrinking"
-	}
-	return fmt.Sprintf("%d×%d  %s  %d ticks/s  %s", cfg.Width, cfg.Height, walls, cfg.TickRate, mode)
+	return fmt.Sprintf("%d×%d  %s  %d ticks/s", cfg.Width, cfg.Height, walls, cfg.TickRate)
 }
 
 // rosterPanel renders the seated players.

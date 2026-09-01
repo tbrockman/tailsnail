@@ -327,24 +327,10 @@ func TestHostFormRenders(t *testing.T) {
 		checkFrame(t, m, "hostform", m.View())
 	}
 	plain := stripANSI(m.View())
-	for _, want := range []string{"lobby name", "arena width", "tick rate", "max players", "mode"} {
+	for _, want := range []string{"lobby name", "arena width", "tick rate", "max players", "walls"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("host form is missing %q", want)
 		}
-	}
-}
-
-func TestHostFormShowsShrinkFieldOnlyInShrinkMode(t *testing.T) {
-	m := newTestModel(t)
-	m.screen = screenHostForm
-
-	m.form.cfg.Mode = game.ModeClassic
-	if strings.Contains(stripANSI(m.View()), "shrink every") {
-		t.Error("the shrink interval is offered in classic mode")
-	}
-	m.form.cfg.Mode = game.ModeShrink
-	if !strings.Contains(stripANSI(m.View()), "shrink every") {
-		t.Error("the shrink interval is hidden in shrinking mode")
 	}
 }
 
@@ -549,15 +535,12 @@ func TestGameRendersEveryPlayerCount(t *testing.T) {
 
 func TestGameRendersWithEffectsInFlight(t *testing.T) {
 	cfg := game.DefaultConfig()
-	cfg.Mode = game.ModeShrink
-	cfg.ShrinkEvery = 5
 	m := gameFixture(t, 4, cfg)
 
 	// Seed one of every effect kind at a valid cell.
 	m.game.effects = []effect{
 		{at: game.Point{X: 3, Y: 3}, slot: 0, born: m.now, kind: game.EventDeath},
 		{at: game.Point{X: 4, Y: 4}, slot: 1, born: m.now, kind: game.EventEat},
-		{at: game.Point{X: 0, Y: 0}, slot: 2, born: m.now, kind: game.EventShrink},
 	}
 	checkFrame(t, m, "game effects", m.View())
 
@@ -1127,7 +1110,7 @@ func labelRows(view string) map[string]int {
 		}
 		for _, label := range []string{
 			"lobby name", "arena width", "arena height", "tick rate", "snake speed",
-			"max players", "bots", "walls", "mode", "shrink every", "food",
+			"max players", "bots", "walls", "food",
 			"display name", "theme", "glyphs", "colour", "auto-resize",
 			"node details", "re-authenticate",
 		} {
@@ -1334,7 +1317,7 @@ func TestEveryFieldOccupiesExactlyOneRow(t *testing.T) {
 	}{
 		{"host form", screenHostForm, []string{
 			"lobby name", "arena width", "arena height", "tick rate",
-			"snake speed", "max players", "bots", "walls", "mode", "food",
+			"snake speed", "max players", "bots", "walls", "food",
 		}},
 		{"settings", screenSettings, []string{
 			"display name", "theme", "glyphs", "colour",
@@ -1749,7 +1732,7 @@ func TestHistoryMatchDetailHangsUnderTheRow(t *testing.T) {
 	view := m.View()
 	checkFrame(t, m, "history match detail", view)
 	plain := stripANSI(view)
-	if !strings.Contains(plain, "40×20 classic") {
+	if !strings.Contains(plain, "40×20") {
 		t.Errorf("the match detail is not shown:\n%s", plain)
 	}
 	// A full-width table leaves no room beside it, so the box hangs below.
@@ -1857,7 +1840,7 @@ func TestTableDetailHangsFromTheLeftOfItsRow(t *testing.T) {
 		m.history.reload(m.app.Store)
 		m.screen = screenHistory
 		m.history.tab = tabMatches
-		assertHangsLeft(t, m, "40×20 classic")
+		assertHangsLeft(t, m, "40×20")
 	})
 }
 
@@ -2193,162 +2176,6 @@ func TestAWrappingViewNeverRepeatsACell(t *testing.T) {
 		}
 	}
 }
-
-func TestTheCameraFollowsAllTheWayRoundAWrappingArena(t *testing.T) {
-	m, cfg := wrapFixture(t, 100, 40)
-
-	// Walk twice round the world; the player must stay on screen throughout,
-	// with no clamping at the boundary and no jump.
-	for step := range cfg.Width * 2 {
-		x := mod(step, cfg.Width)
-		placeSnake(m, 0, x, 20, cfg.Width)
-		win := m.arenaWindow(m.game.state, 68, 12)
-
-		// The head's offset within the window, taking the short way round.
-		offset := mod(x-win.X0, cfg.Width)
-		if offset >= win.Width() {
-			t.Fatalf("at x=%d the player is outside the window %+v", x, win)
-		}
-		if win.Width() != 68 || win.Height() != 12 {
-			t.Fatalf("at x=%d the window is %dx%d", x, win.Width(), win.Height())
-		}
-	}
-}
-
-func TestAWalledArenaStillStopsAtItsEdges(t *testing.T) {
-	// Without wrap-around there is nothing past the wall, so showing the far
-	// side would be a lie.
-	cfg := game.DefaultConfig()
-	cfg.Width, cfg.Height = 100, 40
-	cfg.Wrap = false
-	m := gameFixture(t, 2, cfg)
-	m.width, m.height = 70, 20
-
-	for _, x := range []int{0, 1, cfg.Width - 2, cfg.Width - 1} {
-		placeSnake(m, 0, x, 20, cfg.Width)
-		win := m.arenaWindow(m.game.state, 68, 12)
-		if m.game.wrapX || m.game.wrapY {
-			t.Fatal("a walled arena rendered seamlessly")
-		}
-		if win.X0 < 0 || win.X1 >= cfg.Width {
-			t.Errorf("at x=%d the window %+v left the arena", x, win)
-		}
-	}
-}
-
-// shrinkFixture builds a wrapping match whose arena has already contracted.
-func shrinkFixture(t *testing.T, gridW, gridH, inset int) (*Model, game.Rect) {
-	t.Helper()
-	cfg := game.DefaultConfig()
-	cfg.Width, cfg.Height = gridW, gridH
-	cfg.Wrap = true
-	cfg.Mode = game.ModeShrink
-	m := gameFixture(t, 3, cfg)
-	m.width, m.height = 80, 24
-
-	arena := game.Rect{
-		X0: inset, Y0: inset,
-		X1: gridW - 1 - inset, Y1: gridH - 1 - inset,
-	}
-	m.game.state.Arena = arena
-	return m, arena
-}
-
-func TestAShrinkingWrappedWorldIsStillATorus(t *testing.T) {
-	// The shrinking mode makes the arena smaller, and a smaller torus is still
-	// a torus. Treating a contracted arena as though it had edges stopped the
-	// camera tracking and lost the fold marks entirely.
-	m, arena := shrinkFixture(t, 100, 40, 12)
-
-	// Put the player inside the contracted arena and render.
-	placeSnake(m, 0, arena.X0+3, arena.Y0+3, m.game.cfg.Width)
-	m.arenaWindow(m.game.state, 68, 12)
-
-	if !m.game.wrapX || !m.game.wrapY {
-		t.Fatal("a contracted wrapping arena lost its seamless rendering")
-	}
-	if m.game.world != arena {
-		t.Errorf("the camera's world is %+v, want the live arena %+v", m.game.world, arena)
-	}
-}
-
-func TestTheViewShrinksWithTheWorld(t *testing.T) {
-	// A view wider than the world would show the same snake twice.
-	// Insets that leave a real arena; the sim never contracts past its minimum.
-	for _, inset := range []int{0, 5, 15, 18} {
-		m, arena := shrinkFixture(t, 100, 40, inset)
-		placeSnake(m, 0, arena.X0+1, arena.Y0+1, m.game.cfg.Width)
-		win := m.arenaWindow(m.game.state, 200, 100) // far more room than the world
-
-		if win.Width() > arena.Width() || win.Height() > arena.Height() {
-			t.Errorf("inset %d: window %dx%d is larger than the %dx%d world",
-				inset, win.Width(), win.Height(), arena.Width(), arena.Height())
-		}
-	}
-}
-
-func TestTheCameraKeepsTrackingAsTheWorldShrinks(t *testing.T) {
-	// The reported symptom: the camera stopped following the player once the
-	// walls started closing in.
-	for _, inset := range []int{0, 8, 16} {
-		m, arena := shrinkFixture(t, 100, 40, inset)
-		viewW := min(40, arena.Width())
-		viewH := min(12, arena.Height())
-
-		for step := range arena.Width() {
-			x := arena.X0 + mod(step, arena.Width())
-			placeSnake(m, 0, x, arena.Y0+2, m.game.cfg.Width)
-			win := m.arenaWindow(m.game.state, viewW, viewH)
-
-			offset := mod(x-win.X0, arena.Width())
-			if offset != viewW/2 {
-				t.Fatalf("inset %d, x=%d: the player sits at %d in the view, want the centre %d",
-					inset, x, offset, viewW/2)
-			}
-		}
-	}
-}
-
-func TestTheFoldMovesInwardWithTheWalls(t *testing.T) {
-	m, arena := shrinkFixture(t, 100, 40, 12)
-	placeSnake(m, 0, arena.X0, arena.Y0+4, m.game.cfg.Width)
-
-	rendered := stripANSI(m.renderArena(m.game.state, 40, 12))
-	g := m.style.Glyphs
-	if !strings.Contains(rendered, g.SeamTop) && !strings.Contains(rendered, g.FoldVertical) {
-		t.Errorf("the contracted world's fold is not marked:\n%s", rendered)
-	}
-	// And the ground the walls closed over is no longer part of the world, so
-	// none of it should be on screen.
-	if strings.Contains(rendered, g.Dead) {
-		t.Errorf("closed ground is being drawn inside a torus that no longer includes it:\n%s", rendered)
-	}
-}
-
-func TestAWalledShrinkingArenaStillShowsTheClosingWalls(t *testing.T) {
-	// Without wrap-around the ground outside the arena is exactly what a
-	// player needs to see coming, so the world stays the whole grid.
-	cfg := game.DefaultConfig()
-	cfg.Width, cfg.Height = 60, 24
-	cfg.Wrap = false
-	cfg.Mode = game.ModeShrink
-	m := gameFixture(t, 2, cfg)
-	m.width, m.height = 90, 30
-	m.game.state.Arena = game.Rect{X0: 6, Y0: 3, X1: 53, Y1: 20}
-
-	m.arenaWindow(m.game.state, 80, 20)
-	if m.game.wrapX || m.game.wrapY {
-		t.Fatal("a walled arena was drawn seamlessly")
-	}
-	if m.game.world != m.game.fullArena {
-		t.Errorf("the camera's world is %+v, want the whole grid %+v", m.game.world, m.game.fullArena)
-	}
-	rendered := stripANSI(m.renderArena(m.game.state, 80, 20))
-	if !strings.Contains(rendered, m.style.Glyphs.Dead) {
-		t.Errorf("the closed ground is not drawn:\n%s", rendered)
-	}
-}
-
 func TestSeamlessFramesKeepTheirExactDimensions(t *testing.T) {
 	m, cfg := wrapFixture(t, 100, 40)
 	for _, x := range []int{0, 1, 50, cfg.Width - 1} {

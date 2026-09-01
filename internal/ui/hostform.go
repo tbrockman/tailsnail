@@ -28,8 +28,6 @@ type formField struct {
 	adjust func(*Model, int)
 	// text marks the row as a free-text input rather than a stepper.
 	text bool
-	// hidden hides a row that does not apply to the current mode.
-	hidden func(*Model) bool
 }
 
 // formState is the host configuration form.
@@ -75,9 +73,6 @@ func (m *Model) initForm() {
 		cfg.MaxPlayers = p.MaxPlayers
 		cfg.Bots = p.Bots
 		cfg.Wrap = p.Wrap
-		if game.Mode(p.Mode).Valid() {
-			cfg.Mode = game.Mode(p.Mode)
-		}
 		if cfg.Validate() != nil {
 			// A stored config from an older build may no longer be valid;
 			// fall back rather than presenting an unusable form.
@@ -166,30 +161,6 @@ func (m *Model) initForm() {
 			adjust: func(m *Model, _ int) { m.form.cfg.Wrap = !m.form.cfg.Wrap },
 		},
 		{
-			label: "mode", help: "classic, or an arena that closes in",
-			value: func(m *Model) string {
-				if m.form.cfg.Mode == game.ModeShrink {
-					return "shrinking arena"
-				}
-				return "classic"
-			},
-			adjust: func(m *Model, _ int) {
-				if m.form.cfg.Mode == game.ModeClassic {
-					m.form.cfg.Mode = game.ModeShrink
-				} else {
-					m.form.cfg.Mode = game.ModeClassic
-				}
-			},
-		},
-		{
-			label: "shrink every", help: "moves between the walls closing in",
-			hidden: func(m *Model) bool { return m.form.cfg.Mode != game.ModeShrink },
-			value:  func(m *Model) string { return fmt.Sprintf("%d moves", m.form.cfg.ShrinkEvery) },
-			adjust: func(m *Model, d int) {
-				m.form.cfg.ShrinkEvery = clampInt(m.form.cfg.ShrinkEvery+d*5, 5, 200)
-			},
-		},
-		{
 			label: "food", help: "pellets on the board at once",
 			value: func(m *Model) string { return fmt.Sprintf("%d", m.form.cfg.FoodCount) },
 			adjust: func(m *Model, d int) {
@@ -199,13 +170,11 @@ func (m *Model) initForm() {
 	}
 }
 
-// visibleFields returns the rows that apply to the current configuration.
+// visibleFields returns the form's rows in order.
 func (m *Model) visibleFields() []int {
 	out := make([]int, 0, len(m.form.fields))
-	for i, f := range m.form.fields {
-		if f.hidden == nil || !f.hidden(m) {
-			out = append(out, i)
-		}
+	for i := range m.form.fields {
+		out = append(out, i)
 	}
 	return out
 }
@@ -313,7 +282,7 @@ func (m *Model) startHosting() tea.Cmd {
 	m.app.Settings.LastConfig = &store.HostPrefs{
 		Name: cfg.Name, Width: cfg.Width, Height: cfg.Height,
 		TickRate: cfg.TickRate, TicksPerMove: cfg.TicksPerMove,
-		MaxPlayers: cfg.MaxPlayers, Bots: cfg.Bots, Wrap: cfg.Wrap, Mode: string(cfg.Mode),
+		MaxPlayers: cfg.MaxPlayers, Bots: cfg.Bots, Wrap: cfg.Wrap,
 	}
 	if err := store.SaveSettings(m.app.StateDir, m.app.Settings); err != nil {
 		m.app.Log.Logf("ui: saving host preferences: %v", err)

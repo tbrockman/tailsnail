@@ -922,7 +922,6 @@ func TestHostCanReconfigureAnOpenLobby(t *testing.T) {
 	next := cfg
 	next.Width, next.Height = 30, 16
 	next.TickRate = 15
-	next.Mode = game.ModeShrink
 	next.Bots = 1
 	host.Reconfigure("after", next)
 
@@ -933,7 +932,7 @@ func TestHostCanReconfigureAnOpenLobby(t *testing.T) {
 			return ok && lu.State.Config.Width == 30 && lu.State.Name == "after"
 		})
 		st := ev.(LobbyUpdate).State
-		if st.Config.TickRate != 15 || st.Config.Mode != game.ModeShrink {
+		if st.Config.TickRate != 15 {
 			t.Errorf("%s sees config %+v", who, st.Config)
 		}
 		if len(st.Players) != 3 {

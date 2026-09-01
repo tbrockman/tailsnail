@@ -65,9 +65,8 @@ func (d Direction) String() string {
 	return "invalid"
 }
 
-// Rect is an inclusive rectangle of playable cells. In the shrinking-arena
-// mode the rect contracts over the course of a match; in classic mode it is
-// fixed at the full grid.
+// Rect is an inclusive rectangle of playable cells. It spans the whole grid
+// for the life of a match.
 type Rect struct {
 	X0 int `json:"x0"`
 	Y0 int `json:"y0"`
@@ -86,20 +85,6 @@ func (r Rect) Width() int { return r.X1 - r.X0 + 1 }
 // Height returns the number of playable rows.
 func (r Rect) Height() int { return r.Y1 - r.Y0 + 1 }
 
-// Mode selects a gameplay variant.
-type Mode string
-
-const (
-	// ModeClassic is a fixed arena; last snake alive wins.
-	ModeClassic Mode = "classic"
-	// ModeShrink contracts the arena walls every ShrinkEvery moves, forcing
-	// survivors together — a battle-royale-flavoured variant.
-	ModeShrink Mode = "shrink"
-)
-
-// Valid reports whether m is a known mode.
-func (m Mode) Valid() bool { return m == ModeClassic || m == ModeShrink }
-
 // Minimum and maximum arena dimensions and seat counts. These bound the host
 // configuration form and are re-checked on the wire.
 const (
@@ -109,9 +94,6 @@ const (
 	MaxHeight  = 48
 	MinPlayers = 2
 	MaxPlayers = 8
-
-	// MinArenaSpan is the smallest a shrinking arena is allowed to become.
-	MinArenaSpan = 7
 
 	// StartLength is the body length every snake spawns with.
 	StartLength = 3
@@ -127,9 +109,7 @@ type Config struct {
 	TicksPerMove int    `json:"ticks_per_move"` // snakes advance one cell every N ticks
 	MaxPlayers   int    `json:"max_players"`
 	Wrap         bool   `json:"wrap"`
-	Mode         Mode   `json:"mode"`
 	FoodCount    int    `json:"food_count"`
-	ShrinkEvery  int    `json:"shrink_every"` // moves between shrink steps (ModeShrink)
 	Seed         int64  `json:"seed"`
 
 	// Bots is how many seats the host fills with computer players. The
@@ -152,9 +132,7 @@ func DefaultConfig() Config {
 		TicksPerMove: 2,
 		MaxPlayers:   4,
 		Wrap:         true,
-		Mode:         ModeClassic,
 		FoodCount:    3,
-		ShrinkEvery:  40,
 	}
 }
 
@@ -171,12 +149,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("ticks per move %d out of range 1..10", c.TicksPerMove)
 	case c.MaxPlayers < MinPlayers || c.MaxPlayers > MaxPlayers:
 		return fmt.Errorf("max players %d out of range %d..%d", c.MaxPlayers, MinPlayers, MaxPlayers)
-	case !c.Mode.Valid():
-		return fmt.Errorf("unknown mode %q", c.Mode)
 	case c.FoodCount < 1 || c.FoodCount > 16:
 		return fmt.Errorf("food count %d out of range 1..16", c.FoodCount)
-	case c.Mode == ModeShrink && (c.ShrinkEvery < 5 || c.ShrinkEvery > 500):
-		return fmt.Errorf("shrink interval %d out of range 5..500", c.ShrinkEvery)
 	case c.Bots < 0 || c.Bots > c.MaxPlayers-1:
 		return fmt.Errorf("bot count %d out of range 0..%d", c.Bots, c.MaxPlayers-1)
 	}
@@ -222,8 +196,6 @@ const (
 	EventEat EventKind = "eat"
 	// EventDeath marks an elimination.
 	EventDeath EventKind = "death"
-	// EventShrink marks the arena contracting by one ring.
-	EventShrink EventKind = "shrink"
 	// EventSpawn marks food appearing.
 	EventSpawn EventKind = "spawn"
 )

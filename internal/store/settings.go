@@ -36,7 +36,6 @@ type HostPrefs struct {
 	MaxPlayers   int    `json:"max_players"`
 	Bots         int    `json:"bots,omitempty"`
 	Wrap         bool   `json:"wrap"`
-	Mode         string `json:"mode"`
 }
 
 // DefaultSettings returns the settings a fresh install starts with.

@@ -12,7 +12,6 @@ type Sim struct {
 	state State
 	rng   *rand.Rand
 
-	movesDone  int
 	deathOrder []PlayerID // order of elimination, earliest first
 	finished   bool
 }
@@ -116,11 +115,7 @@ func (s *Sim) Step() State {
 	if s.state.Tick%s.cfg.TicksPerMove != 0 {
 		return s.State()
 	}
-	s.movesDone++
 	s.advance()
-	if s.cfg.Mode == ModeShrink && s.movesDone%s.cfg.ShrinkEvery == 0 {
-		s.shrink()
-	}
 	s.checkOver()
 	return s.State()
 }
@@ -290,58 +285,6 @@ func (s *Sim) kill(sn *Snake) {
 	sn.Alive = false
 	sn.DiedAtTick = s.state.Tick
 	s.deathOrder = append(s.deathOrder, sn.ID)
-}
-
-// shrink contracts the arena by one ring, culling anything left outside.
-func (s *Sim) shrink() {
-	a := s.state.Arena
-	// Each step removes a cell from both sides of an axis, so only contract an
-	// axis when the result would still leave a playable span.
-	shrunk := false
-	if a.Width()-2 >= MinArenaSpan {
-		a.X0++
-		a.X1--
-		shrunk = true
-	}
-	if a.Height()-2 >= MinArenaSpan {
-		a.Y0++
-		a.Y1--
-		shrunk = true
-	}
-	if !shrunk {
-		return
-	}
-	s.state.Arena = a
-	s.state.Events = append(s.state.Events, Event{Kind: EventShrink, At: Point{a.X0, a.Y0}})
-
-	for i := range s.state.Snakes {
-		sn := &s.state.Snakes[i]
-		if !sn.Alive {
-			continue
-		}
-		if !a.Contains(sn.Head()) {
-			s.state.Events = append(s.state.Events, Event{Kind: EventDeath, Player: sn.ID, At: sn.Head()})
-			s.kill(sn)
-			continue
-		}
-		// Trim any trailing body that the wall swallowed so the render stays
-		// inside the arena.
-		keep := sn.Body[:0]
-		for _, p := range sn.Body {
-			if a.Contains(p) {
-				keep = append(keep, p)
-			}
-		}
-		sn.Body = keep
-	}
-	food := s.state.Food[:0]
-	for _, f := range s.state.Food {
-		if a.Contains(f) {
-			food = append(food, f)
-		}
-	}
-	s.state.Food = food
-	s.replenishFood()
 }
 
 // freeCell picks a uniformly random unoccupied cell inside the arena. It

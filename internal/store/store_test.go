@@ -545,7 +545,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	got.Theme = "mono"
 	got.ASCII = true
 	got.DisplayName = "ada"
-	got.LastConfig = &HostPrefs{Name: "friday", Width: 30, Height: 16, TickRate: 15, TicksPerMove: 2, MaxPlayers: 3, Wrap: false, Mode: "shrink"}
+	got.LastConfig = &HostPrefs{Name: "friday", Width: 30, Height: 16, TickRate: 15, TicksPerMove: 2, MaxPlayers: 3, Wrap: false}
 	if err := SaveSettings(dir, got); err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +556,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	if reloaded.Theme != "mono" || !reloaded.ASCII || reloaded.DisplayName != "ada" {
 		t.Fatalf("settings = %+v, want the saved values", reloaded)
 	}
-	if reloaded.LastConfig == nil || reloaded.LastConfig.Mode != "shrink" || reloaded.LastConfig.Width != 30 {
+	if reloaded.LastConfig == nil || reloaded.LastConfig.Width != 30 {
 		t.Fatalf("last host config = %+v", reloaded.LastConfig)
 	}
 }

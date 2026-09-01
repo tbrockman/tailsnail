@@ -269,8 +269,8 @@ func (m *Model) matchDetail(rec proto.AttestedRecord) string {
 			names = append(names, fmt.Sprintf("%d. %s", pl.Place, p.DisplayName))
 		}
 	}
-	return fmt.Sprintf("%d×%d %s  %s  %s\n%s",
-		cfg.Width, cfg.Height, cfg.Mode, m.style.Glyphs.Bullet,
+	return fmt.Sprintf("%d×%d  %s  %s\n%s",
+		cfg.Width, cfg.Height, m.style.Glyphs.Bullet,
 		duration(length), strings.Join(names, "  "))
 }
 

@@ -10,7 +10,7 @@ nothing to deploy — if two people on the same tailnet run `tsnail`, they can
 see each other.
 
 ```
-tailsnail  │  lobby   friday night  •  40×20  wrap  20 ticks/s  classic     ● tsnail-laptop 100.64.1.2
+tailsnail  │  lobby   friday night  •  40×20  wrap  20 ticks/s     ● tsnail-laptop 100.64.1.2
 ────────────────────────────────────────────────────────────────────────────────────────────────────
    ● ada 7      ◆ grace 12      ■ hedy 5      ▲ katherine 9
 
@@ -33,9 +33,9 @@ tailsnail  │  lobby   friday night  •  40×20  wrap  20 ticks/s  classic    
 - **Finds peers by probing them.** Every online node in your netmap is a
   candidate; the ones that answer a tailsnail handshake show up in the lobby
   browser within a couple of seconds.
-- **Runs host-authoritative matches** for two to eight players, with two
-  gameplay modes and configurable arena, speed and wrap-around. Seats can be
-  filled with bots, so a lobby is playable without waiting for anybody.
+- **Runs host-authoritative matches** for two to eight players, with a
+  configurable arena, speed and wrap-around. Seats can be filled with bots, so
+  a lobby is playable without waiting for anybody.
 - **Signs and gossips results.** Every participant signs the final standings,
   and peers sync each other's match history whenever they connect — so a
   leaderboard assembles itself with no central store.
@@ -311,7 +311,7 @@ large amount of machinery for a case where someone can simply open a new lobby.
 ## Lobbies and gameplay
 
 A host configures grid size, tick rate, snake speed, seats (2–8), bots,
-wrap-around, food count, and mode. Players join from the browser, see the
+wrap-around and food count. Players join from the browser, see the
 roster with each player's colour and glyph, and toggle ready. **The match
 starts automatically once every seated player is ready**, after an animated
 3-2-1. Readying up alone is a legitimate practice mode.
@@ -340,15 +340,8 @@ the nearest pellet, then keep options open. Bots have no signing key, so they
 are not participants in a match record — the count is recorded in the config
 instead, so a result never reads as a full field of people.
 
-**Themes are a viewer setting, modes are a host setting.** A theme only changes
-how your own terminal draws the game, so it lives in settings and every player
-picks their own; the gameplay variant changes what the simulation does, so it
-belongs to the host's lobby configuration. Two modes:
-
-- **classic** — fixed arena, last snake standing wins.
-- **shrinking** — the arena contracts by one ring every *N* moves, forcing
-  survivors together. The swallowed ground is drawn as closed, and the border
-  flashes as the walls close in.
+**Themes are a viewer setting.** A theme only changes how your own terminal
+draws the game, so it lives in settings and every player picks their own.
 
 Collisions resolve simultaneously against the pre-move world, so two snakes
 entering the same cell both die rather than the one earlier in seat order
@@ -499,19 +492,8 @@ dashed `╎` or `╌` across the board itself. The dashes are laid down before
 anything else, so a snake, a pellet or an effect always paints over them — the
 mark explains the topology and can never hide something that matters.
 
-What counts as "the world" depends on whether it wraps, which matters most in
-the shrinking mode. With wrap-around the world is the *live* arena: the walls
-closing in make the torus smaller, and a smaller torus is still a torus, so the
-view keeps following the player and the fold marks simply move inward with the
-boundary. The view shrinks along with the world, because a window wider than
-the world would show the same snake twice. The ground the walls have closed
-over has not merely been fenced off — it has stopped being part of the world,
-so there is nothing out there to look at.
-
-Without wrap-around the world stays the whole grid, because the ground the
-walls have closed over is exactly what a player needs to see coming, and a
-wall is a real edge: the view stops at it, having tracked the player exactly
-up to that point.
+A walled arena keeps a hard edge: there is nothing past a wall to show, so the
+view stops there, having tracked the player exactly up to that point.
 
 The arena arrives over the network, so the renderer does not assume it is well
 formed. Whatever turns up is clipped to the grid the cell buffer was allocated
@@ -550,8 +532,7 @@ caught by CI. `ci` runs the suite on both Linux and macOS for this reason.
 - `internal/game` — the simulation is pure and deterministic, with no I/O and
   no dependencies outside the standard library. Movement, turning, self- and
   mutual collision, kill attribution, wrap-around on all four edges, food and
-  growth, elimination order and placement ranking, the shrinking arena, and
-  seed determinism.
+  growth, elimination order and placement ranking, and seed determinism.
 - `internal/proto` — canonicalisation is key-order independent and survives a
   wire round trip; sign/verify; tampering is caught both with and without a
   recomputed hash; signatures from non-participants and under the wrong key are
@@ -573,8 +554,8 @@ caught by CI. `ci` runs the suite on both Linux and macOS for this reason.
   all four colour depths, asserting no frame exceeds its viewport; that the
   camera keeps the player centred and moves by exactly one cell per cell they
   travel; that a wrapping view follows a player twice around the world without
-  clamping, never repeats a cell, and marks the fold; and that walled and
-  shrinking arenas still stop at their edges; that field
+  clamping, never repeats a cell, and marks the fold; and that a walled arena
+  still stops at its edges; that field
   rows never shift as the selection moves and a notice changes exactly one
   line; that a dialog keeps its size while being scrolled and stops at the
   start of its content; that the countdown never lands on a spawned snake at

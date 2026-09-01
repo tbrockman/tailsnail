@@ -14,7 +14,7 @@ func testConfig() Config {
 	return Config{
 		Name: "t", Width: 20, Height: 12,
 		TickRate: 10, TicksPerMove: 1, MaxPlayers: 4,
-		Wrap: false, Mode: ModeClassic, FoodCount: 1, ShrinkEvery: 10, Seed: 42,
+		Wrap: false, FoodCount: 1, Seed: 42,
 	}
 }
 
@@ -341,49 +341,6 @@ func TestSoloMatchEndsOnlyWhenTheSnakeDies(t *testing.T) {
 	}
 }
 
-func TestShrinkingArenaContractsAndCulls(t *testing.T) {
-	cfg := testConfig()
-	cfg.Mode = ModeShrink
-	cfg.ShrinkEvery = 1
-	cfg.Wrap = false
-	cfg.FoodCount = 0
-	// Seat 1 sits in the corner that the first shrink step swallows.
-	s := newTestSim(t, cfg,
-		snakeAt(0, DirRight, Point{9, 5}, Point{8, 5}),
-		snakeAt(1, DirDown, Point{0, 0}, Point{0, 1}))
-	// Seat 1 heads south so it is still at x=0 when the west wall closes in.
-	s.state.Snakes[1].Body = []Point{{0, 1}, {0, 0}}
-
-	st := s.Step()
-	want := Rect{1, 1, 18, 10}
-	if st.Arena != want {
-		t.Fatalf("arena = %+v, want %+v", st.Arena, want)
-	}
-	if st.SnakeByID(1).Alive {
-		t.Error("snake left outside the contracted arena survived")
-	}
-	if !hasEvent(st.Events, EventShrink) {
-		t.Error("expected a shrink event")
-	}
-}
-
-func TestShrinkStopsAtMinimumSpan(t *testing.T) {
-	cfg := testConfig()
-	cfg.Mode = ModeShrink
-	cfg.ShrinkEvery = 1
-	cfg.Wrap = true
-	cfg.FoodCount = 0
-	s := newTestSim(t, cfg, snakeAt(0, DirRight, Point{9, 5}, Point{8, 5}))
-
-	for range 30 {
-		s.Step()
-	}
-	a := s.state.Arena
-	if a.Width() < MinArenaSpan || a.Height() < MinArenaSpan {
-		t.Fatalf("arena %+v shrank below the %d-cell minimum", a, MinArenaSpan)
-	}
-}
-
 func TestCoastingSnakeIgnoresInputButKeepsMoving(t *testing.T) {
 	cfg := testConfig()
 	cfg.FoodCount = 0
@@ -516,7 +473,6 @@ func TestConfigValidation(t *testing.T) {
 		{"short", func(c *Config) { c.Height = MinHeight - 1 }, true},
 		{"too many seats", func(c *Config) { c.MaxPlayers = MaxPlayers + 1 }, true},
 		{"too few seats", func(c *Config) { c.MaxPlayers = 1 }, true},
-		{"bad mode", func(c *Config) { c.Mode = "battleship" }, true},
 		{"no food", func(c *Config) { c.FoodCount = 0 }, true},
 		{"zero tick rate", func(c *Config) { c.TickRate = 0 }, true},
 		{"zero move interval", func(c *Config) { c.TicksPerMove = 0 }, true},

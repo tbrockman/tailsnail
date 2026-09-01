@@ -88,6 +88,10 @@ type App struct {
 	Log      *logring.Ring
 	StateDir string
 	Settings store.Settings
+	// StoreProblems are records that could not be read at startup. They are
+	// surfaced rather than only logged: a player whose history is incomplete
+	// should be told, not left to wonder where their matches went.
+	StoreProblems []error
 	// ASCII, Color and Emoji come from the command line and override the
 	// stored settings for this run only.
 	ASCIIFlag bool
@@ -184,12 +188,18 @@ func New(app *App) *Model {
 
 // Init implements tea.Model.
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		frameTick(),
 		waitNodeStatus(m.app.Node.Updates()),
 		waitDiscovery(m.app.Prober.Snapshots()),
 		tea.SetWindowTitle(m.windowTitle()),
-	)
+	}
+	if n := len(m.app.StoreProblems); n > 0 {
+		cmds = append(cmds, m.setToast(toastWarn,
+			"%d stored %s could not be read — ctrl+l for details",
+			n, plural(n, "match", "matches")))
+	}
+	return tea.Batch(cmds...)
 }
 
 // windowTitle names the terminal window. The icon is only worth sending when

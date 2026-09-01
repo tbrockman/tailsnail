@@ -48,9 +48,6 @@ type gameState struct {
 	hasPending bool
 
 	effects []effect
-	// arenaClosed remembers the largest arena seen, so the shrinking-mode
-	// walls can be drawn closing in over the original grid.
-	fullArena game.Rect
 
 	// camera is the top-left of the visible window when the arena is larger
 	// than the terminal. It persists between frames so the view only moves
@@ -61,9 +58,8 @@ type gameState struct {
 	// window is the region the last frame drew. On a wrapping axis it may run
 	// past the world's bounds; cells are looked up modulo it.
 	window game.Rect
-	// world is the region the camera operates over. With wrap-around that is
-	// the live arena, which the shrinking mode contracts; without it, the full
-	// grid, so the ground the walls have closed over stays visible.
+	// world is the region the camera operates over: the arena, clipped to the
+	// grid the cell buffer was allocated for.
 	world game.Rect
 	// wrapX and wrapY record which axes the last frame drew seamlessly.
 	wrapX, wrapY bool
@@ -72,12 +68,11 @@ type gameState struct {
 // start initialises the screen for a new match.
 func (g *gameState) start(ev netplay.GameStarted, now time.Time) {
 	*g = gameState{
-		cfg:       ev.Config,
-		seat:      ev.Seat,
-		matchID:   ev.MatchID,
-		players:   ev.Players,
-		started:   now,
-		fullArena: game.Rect{X0: 0, Y0: 0, X1: ev.Config.Width - 1, Y1: ev.Config.Height - 1},
+		cfg:     ev.Config,
+		seat:    ev.Seat,
+		matchID: ev.MatchID,
+		players: ev.Players,
+		started: now,
 	}
 }
 
@@ -85,12 +80,9 @@ func (g *gameState) start(ev netplay.GameStarted, now time.Time) {
 func (g *gameState) apply(st game.State, now time.Time) {
 	g.state = st
 	g.lastTick = now
-	if g.fullArena.X1 == 0 {
-		g.fullArena = st.Arena
-	}
 	for _, ev := range st.Events {
 		switch ev.Kind {
-		case game.EventDeath, game.EventEat, game.EventShrink:
+		case game.EventDeath, game.EventEat:
 			g.effects = append(g.effects, effect{
 				at: ev.At, slot: g.paletteFor(ev.Player), born: now, kind: ev.Kind,
 			})
@@ -123,8 +115,6 @@ func effectLifetime(k game.EventKind) time.Duration {
 	switch k {
 	case game.EventDeath:
 		return deathFlashDuration
-	case game.EventShrink:
-		return shrinkFlashDuration
 	default:
 		return eatFlashDuration
 	}
@@ -367,30 +357,17 @@ const minArenaView = 24
 // not a fact about the game. The window is never wider than the arena, so no
 // cell — and no snake — can appear in two places at once.
 func (m *Model) arenaWindow(st game.State, availW, availH int) game.Rect {
-	// What counts as "the world" depends on whether it wraps.
-	//
-	// With wrap-around the world is the live arena. The shrinking mode makes
-	// that arena smaller, and a smaller torus is still a torus — the ground
-	// outside it is not merely walled off, it has stopped being part of the
-	// world at all, so there is nothing out there to look at.
-	//
-	// Without wrap-around the world is the whole grid, because the ground the
-	// walls have closed over is exactly what a player needs to see coming.
-	world := m.game.fullArena
-	if m.game.cfg.Wrap {
-		world = st.Arena
-	}
 	// The arena travels over the network, so it is not this code's place to
 	// assume it is well formed. Clipping it to the grid the cell buffer was
 	// actually allocated for repairs both an inverted rect, which would give a
 	// negative view size, and one larger than the grid, which would index off
 	// the end of the buffer. A bad frame should look wrong, not crash.
-	world = clipToGrid(world, m.game.cfg.Width, m.game.cfg.Height)
+	world := clipToGrid(st.Arena, m.game.cfg.Width, m.game.cfg.Height)
 	m.game.world = world
 	worldW, worldH := world.Width(), world.Height()
 
 	// The view can never be larger than the world, or a cell — and a snake —
-	// would appear in two places at once. As the world shrinks, so does this.
+	// would appear in two places at once.
 	viewW := max(min(worldW, max(availW, minArenaView)), 1)
 	viewH := max(min(worldH, max(availH, minArenaView/2)), 1)
 
@@ -475,7 +452,7 @@ func (m *Model) renderArena(st game.State, availW, availH int) string {
 	// Where the world folds, dash the ground. This is laid down first so a
 	// snake, a pellet or an effect always paints over it: the mark explains
 	// the topology and must never hide anything that matters. The fold is at
-	// the edge of the live world, which the shrinking mode moves inward.
+	// the edge of the world.
 	world := m.game.world
 	if m.game.wrapX {
 		for y := world.Y0; y <= world.Y1; y++ {
@@ -492,18 +469,6 @@ func (m *Model) renderArena(st game.State, availW, availH int) string {
 			return -1
 		}
 		return p.Y*w + p.X
-	}
-
-	// Cells the shrinking arena has already swallowed, drawn as closed ground
-	// so the walls visibly march inward.
-	if st.Arena != m.game.fullArena {
-		for y := range h {
-			for x := range w {
-				if !st.Arena.Contains(game.Point{X: x, Y: y}) {
-					buf[y*w+x] = cell{glyph: g.Dead, color: th.Wall.Scale(0.7)}
-				}
-			}
-		}
 	}
 
 	foodPhase := m.phase(1200 * time.Millisecond)
@@ -562,8 +527,6 @@ func (m *Model) renderArena(st game.State, availW, availH int) string {
 			buf[idx] = cell{glyph: g.Ember(progress), color: th.DeathColor(e.slot, progress)}
 		case game.EventEat:
 			buf[idx] = cell{glyph: g.Spark[0], color: th.Food.Lerp(th.Player(e.slot), progress)}
-		case game.EventShrink:
-			// The shrink flash outlines the new boundary rather than a cell.
 		}
 	}
 
@@ -580,15 +543,7 @@ func (m *Model) frameArena(buf []cell, stride int, win game.Rect) string {
 	g := m.style.Glyphs
 	th := m.style.Theme
 
-	// The border pulses when the arena is contracting, so the closing walls
-	// announce themselves before they reach anybody.
 	borderColor := th.Wall
-	for _, e := range m.game.effects {
-		if e.kind == game.EventShrink {
-			progress := float64(m.now.Sub(e.born)) / float64(shrinkFlashDuration)
-			borderColor = th.Warn.Lerp(th.Wall, progress)
-		}
-	}
 	// A clipped view is marked on its own frame, so a player can tell at a
 	// glance that there is board they cannot see.
 	if m.game.clipped {

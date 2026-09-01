@@ -212,7 +212,7 @@ func (m *Model) browserTable(rows []discovery.Peer) (string, rowAnchor) {
 		if a := p.Advert; a != nil {
 			name = a.Name
 			nameColor = th.Fg
-			arena = fmt.Sprintf("%d×%d %s", a.Config.Width, a.Config.Height, a.Config.Mode)
+			arena = fmt.Sprintf("%d×%d", a.Config.Width, a.Config.Height)
 			seats = fmt.Sprintf("%d/%d", a.Taken, a.Seats)
 			switch {
 			case a.Phase == proto.PhaseInGame:
