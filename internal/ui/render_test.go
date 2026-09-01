@@ -1870,33 +1870,76 @@ func TestTheCameraShowsTheWholeArenaWhenItFits(t *testing.T) {
 	}
 }
 
-func TestTheCameraStaysStillWhileThePlayerIsAwayFromTheEdge(t *testing.T) {
-	// A camera locked to the head slides the whole board on every move, which
-	// is unreadable. It should only move when the player nears the edge.
+func TestTheCameraKeepsThePlayerCentred(t *testing.T) {
+	// A wrapping world has no landmarks to anchor a dead zone against, so the
+	// camera simply stays centred and the board slides past.
+	m, cfg := wrapFixture(t, 100, 40)
+	const viewW, viewH = 60, 20
+
+	for _, p := range []game.Point{{X: 0, Y: 0}, {X: 50, Y: 20}, {X: 99, Y: 39}, {X: 13, Y: 7}} {
+		placeSnake(m, 0, p.X, p.Y, cfg.Width)
+		win := m.arenaWindow(m.game.state, viewW, viewH)
+
+		// The head's offset within the window, the short way round.
+		gotX := mod(p.X-win.X0, cfg.Width)
+		gotY := mod(p.Y-win.Y0, cfg.Height)
+		if gotX != viewW/2 || gotY != viewH/2 {
+			t.Errorf("at %+v the player sits at (%d,%d) in the view, want the centre (%d,%d)",
+				p, gotX, gotY, viewW/2, viewH/2)
+		}
+	}
+}
+
+func TestTheCameraMovesOnlyAsFarAsThePlayerDoes(t *testing.T) {
+	// One cell of travel must move the view by one cell. Anything larger is
+	// the board lurching, which is what a dead zone produces at its edges.
+	m, cfg := wrapFixture(t, 100, 40)
+	const viewW, viewH = 60, 20
+
+	// Establish the baseline from the same place the walk starts, so the first
+	// comparison measures the camera rather than the test moving the snake.
+	placeSnake(m, 0, 0, 20, cfg.Width)
+	prev := m.arenaWindow(m.game.state, viewW, viewH)
+	for step := 1; step <= cfg.Width*2; step++ {
+		x := mod(step, cfg.Width)
+		placeSnake(m, 0, x, 20, cfg.Width)
+		win := m.arenaWindow(m.game.state, viewW, viewH)
+
+		// The short way round, since the origin wraps.
+		delta := mod(win.X0-prev.X0, cfg.Width)
+		if delta > cfg.Width/2 {
+			delta -= cfg.Width
+		}
+		if delta != 1 {
+			t.Fatalf("step %d: the view moved %d cells for a one-cell move", step, delta)
+		}
+		prev = win
+	}
+}
+
+func TestAWalledCameraCentresUntilItReachesAWall(t *testing.T) {
+	// There is nothing past a wall to show, so the view stops there — but it
+	// tracks the player exactly up to that point, with no catching up.
 	cfg := game.DefaultConfig()
 	cfg.Width, cfg.Height = 100, 40
 	cfg.Wrap = false
-	m := gameFixture(t, 1, cfg)
-
+	m := gameFixture(t, 2, cfg)
 	const viewW, viewH = 60, 20
-	// Start the snake in the middle and let the camera settle.
-	place := func(x, y int) {
-		m.game.state.Snakes[0].Body = []game.Point{{X: x, Y: y}, {X: x - 1, Y: y}}
-		m.renderArena(m.game.state, viewW, viewH)
-	}
-	place(50, 20)
-	settled := m.game.camera
-	// The dead zone is the middle of the window, away from the scroll margins.
-	midX := settled.X + viewW/2
-	midY := settled.Y + viewH/2
-	place(midX, midY)
-	settled = m.game.camera
 
-	// Small moves well inside the window must not shift it.
-	for _, d := range []int{1, 2, -1, -2} {
-		place(midX+d, midY)
-		if m.game.camera != settled {
-			t.Fatalf("the camera moved to %+v for a step of %d cells inside the dead zone", m.game.camera, d)
+	for x := 0; x < cfg.Width; x++ {
+		placeSnake(m, 0, x, 20, cfg.Width)
+		win := m.arenaWindow(m.game.state, viewW, viewH)
+		if win.X0 < 0 || win.X1 >= cfg.Width {
+			t.Fatalf("at x=%d the window %+v left the arena", x, win)
+		}
+		if x < win.X0 || x > win.X1 {
+			t.Fatalf("at x=%d the player is outside the window %+v", x, win)
+		}
+		// Away from both walls the player must be exactly centred.
+		if x >= viewW/2 && x < cfg.Width-viewW/2 {
+			if got := x - win.X0; got != viewW/2 {
+				t.Errorf("at x=%d the player sits at %d in the view, want %d", x, got, viewW/2)
+			}
 		}
 	}
 }

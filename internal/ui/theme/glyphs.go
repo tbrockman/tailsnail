@@ -50,6 +50,10 @@ type Glyphs struct {
 	// arena folds back on itself, drawn on the frame so the topology is
 	// visible without covering any of the board.
 	SeamTop, SeamBottom, SeamLeft, SeamRight string
+	// FoldVertical and FoldHorizontal continue that mark across the board
+	// itself. They are drawn only on empty ground, so they can never hide a
+	// snake or a pellet.
+	FoldVertical, FoldHorizontal string
 	// Spinner frames for connecting and scanning states.
 	Spinner []string
 	// Meter fills a progress or countdown bar.
@@ -73,6 +77,7 @@ var Unicode = Glyphs{
 	Bullet: "•", Check: "✓", Cross: "✗", Arrow: "›", Ellipsis: "…",
 	PointLeft: "◂", PointRight: "▸", PointUp: "▴", PointDown: "▾",
 	SeamTop: "┬", SeamBottom: "┴", SeamLeft: "├", SeamRight: "┤",
+	FoldVertical: "╎", FoldHorizontal: "╌",
 	// A shell-like spiral stands in for the snail where emoji cannot be
 	// trusted to measure correctly.
 	Logo:      "◎",
@@ -98,6 +103,7 @@ var ASCIIGlyphs = Glyphs{
 	Bullet: "*", Check: "x", Cross: "-", Arrow: ">", Ellipsis: "...",
 	PointLeft: "<", PointRight: ">", PointUp: "^", PointDown: "v",
 	SeamTop: "+", SeamBottom: "+", SeamLeft: "+", SeamRight: "+",
+	FoldVertical: ":", FoldHorizontal: ".",
 	Logo:      "@",
 	Spinner:   []string{"|", "/", "-", "\\"},
 	MeterFull: "#", MeterEmpty: ".",

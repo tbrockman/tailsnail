@@ -323,29 +323,21 @@ func (m *Model) countdownBlock(n int, compact bool) string {
 // tells a player nothing useful, so the resize overlay takes over instead.
 const minArenaView = 24
 
-// scrollMarginX and scrollMarginY are how close the head may get to the edge
-// of the window before it scrolls. A camera locked to the head would slide the
-// whole board on every move, which is unreadable; a dead zone in the middle
-// keeps it still for most of the time.
-const (
-	scrollMarginX = 8
-	scrollMarginY = 4
-)
-
-// arenaWindow returns the region of the arena to draw: all of it when it fits,
-// and a window tracking the player when it does not.
+// arenaWindow returns the region of the arena to draw, centred on the player.
 //
-// A host can configure an arena larger than a given player's terminal, and
-// that player may have no way to make their terminal bigger — it may already
-// fill the screen. Showing part of the board is a real disadvantage, but it is
-// the difference between playing and being locked out of a match already
-// joined.
+// The camera follows the player continuously rather than sitting still and
+// catching up in jumps. A dead zone is the usual way to keep a view calm, but
+// it only works where the world has fixed landmarks to anchor against: in a
+// wrapping arena there are none, so the catch-up reads as the board lurching
+// for no reason. Moving by exactly one cell per move is both smoother and
+// easier to predict.
 //
-// On a wrap-around arena the window is not clamped to the edges. The world is
-// a torus: the cell to the right of the last column really is the first
-// column, so drawing it there is not a trick, it is the truth. The teleport a
-// player used to experience at the boundary was an artefact of clamping the
-// camera, not a fact about the game.
+// On a wrapping axis the window is not clamped to the edges. The world is a
+// torus: the cell to the right of the last column really is the first column,
+// so drawing it there is not a trick, it is the truth. The teleport a player
+// used to experience at the boundary was an artefact of clamping the camera,
+// not a fact about the game. The window is never wider than the arena, so no
+// cell — and no snake — can appear in two places at once.
 func (m *Model) arenaWindow(st game.State, availW, availH int) game.Rect {
 	w, h := m.game.cfg.Width, m.game.cfg.Height
 	viewW := min(w, max(availW, minArenaView))
@@ -355,74 +347,32 @@ func (m *Model) arenaWindow(st game.State, availW, availH int) game.Rect {
 	// shrinking mode has closed the walls in, the ground outside them is real
 	// and has to stay visible, so that falls back to a clamped view.
 	seamless := m.game.cfg.Wrap && st.Arena == m.game.fullArena
-	m.game.wrapX = seamless && viewW < w
-	m.game.wrapY = seamless && viewH < h
+	m.game.wrapX, m.game.wrapY = seamless, seamless
+	m.game.clipped = viewW < w || viewH < h
 
-	if viewW >= w && viewH >= h {
-		m.game.clipped = false
-		m.game.window = game.Rect{X0: 0, Y0: 0, X1: w - 1, Y1: h - 1}
-		return m.game.window
-	}
-	m.game.clipped = true
-
-	cam := m.game.camera
-	if !m.game.wrapX {
-		cam.X = clampInt(cam.X, 0, max(w-viewW, 0))
-	}
-	if !m.game.wrapY {
-		cam.Y = clampInt(cam.Y, 0, max(h-viewH, 0))
-	}
-
+	// Centre on our own snake. A dead player's last position is as good an
+	// anchor as any, and keeping it still is less jarring than snapping the
+	// board somewhere else at the moment they are eliminated.
+	origin := game.Point{X: (w - viewW) / 2, Y: (h - viewH) / 2}
 	if sn := st.SnakeByID(m.game.seat); sn != nil && len(sn.Body) > 0 {
 		head := sn.Head()
-		mx := min(scrollMarginX, max(viewW/2-1, 0))
-		my := min(scrollMarginY, max(viewH/2-1, 0))
-
-		cam.X = track(cam.X, headNear(head.X, cam.X, w, m.game.wrapX), viewW, mx)
-		cam.Y = track(cam.Y, headNear(head.Y, cam.Y, h, m.game.wrapY), viewH, my)
-
-		if m.game.wrapX {
-			// Keep the origin in a sane range so it cannot drift forever.
-			cam.X = mod(cam.X, w)
-		} else {
-			cam.X = clampInt(cam.X, 0, max(w-viewW, 0))
-		}
-		if m.game.wrapY {
-			cam.Y = mod(cam.Y, h)
-		} else {
-			cam.Y = clampInt(cam.Y, 0, max(h-viewH, 0))
-		}
+		origin = game.Point{X: head.X - viewW/2, Y: head.Y - viewH/2}
 	}
-	m.game.camera = cam
-	m.game.window = game.Rect{X0: cam.X, Y0: cam.Y, X1: cam.X + viewW - 1, Y1: cam.Y + viewH - 1}
+
+	if m.game.wrapX {
+		origin.X = mod(origin.X, w)
+	} else {
+		origin.X = clampInt(origin.X, 0, max(w-viewW, 0))
+	}
+	if m.game.wrapY {
+		origin.Y = mod(origin.Y, h)
+	} else {
+		origin.Y = clampInt(origin.Y, 0, max(h-viewH, 0))
+	}
+
+	m.game.camera = origin
+	m.game.window = game.Rect{X0: origin.X, Y0: origin.Y, X1: origin.X + viewW - 1, Y1: origin.Y + viewH - 1}
 	return m.game.window
-}
-
-// headNear expresses the head's position in the window's own frame of
-// reference. On a wrapping axis the nearer of the two ways round is the one
-// the player perceives, so that is the one the camera reacts to.
-func headNear(head, origin, span int, wrapping bool) int {
-	if !wrapping {
-		return head
-	}
-	delta := mod(head-origin, span)
-	if delta > span/2 {
-		delta -= span
-	}
-	return origin + delta
-}
-
-// track nudges a camera origin so that head stays at least margin cells inside
-// a window of the given size. It leaves the origin alone while the head is in
-// the dead zone, which is what stops the board sliding on every move.
-func track(origin, head, size, margin int) int {
-	if head-margin < origin {
-		return head - margin
-	}
-	if head+margin > origin+size-1 {
-		return head + margin - size + 1
-	}
-	return origin
 }
 
 // mod is a modulo that returns a non-negative result, which is what wrapping
@@ -438,7 +388,7 @@ func mod(v, n int) int {
 	return v
 }
 
-// cell is one rendered arena position.// cell is one rendered arena position.
+// cell is one rendered arena position.// cell is one rendered arena position.// cell is one rendered arena position.
 type cell struct {
 	glyph string
 	color theme.RGB
@@ -462,6 +412,19 @@ func (m *Model) renderArena(st game.State, availW, availH int) string {
 	buf := make([]cell, w*h)
 	for i := range buf {
 		buf[i] = cell{glyph: g.Empty, color: th.Grid}
+	}
+	// Where the world folds, dash the ground. This is laid down first so a
+	// snake, a pellet or an effect always paints over it: the mark explains
+	// the topology and must never hide anything that matters.
+	if m.game.wrapX {
+		for y := range h {
+			buf[y*w] = cell{glyph: g.FoldVertical, color: th.Faint}
+		}
+	}
+	if m.game.wrapY {
+		for x := range w {
+			buf[x] = cell{glyph: g.FoldHorizontal, color: th.Faint}
+		}
 	}
 	at := func(p game.Point) int {
 		if p.X < 0 || p.X >= w || p.Y < 0 || p.Y >= h {

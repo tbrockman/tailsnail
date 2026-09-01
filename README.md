@@ -436,32 +436,39 @@ window it is describing.
 
 **A board bigger than your terminal still plays.** A host can pick an arena
 larger than someone else's screen, and that player may have no way to make
-their terminal bigger — it may already fill the display. So the arena scrolls:
-the view follows your snake, moving only when you approach its edge rather
-than sliding under you on every move. The frame is tinted and the header says
-`82×18 of 98×40`, because a player who cannot see the whole board should know
-that rather than wonder where everyone went. Seeing part of the board is a
-real disadvantage; being locked out of a match you have already joined is
-worse.
+their terminal bigger — it may already fill the display. So the view is a
+camera centred on your snake, and the board moves past it. The frame is tinted
+and the header says `72×12 of 100×40`, because a player who cannot see the
+whole board should know that rather than wonder where everyone went. Seeing
+part of the board is a real disadvantage; being locked out of a match you have
+already joined is worse.
+
+The camera follows continuously — one cell of travel moves the view by exactly
+one cell. Keeping a view still until the player nears its edge and then
+catching up in a jump is the usual trick for calming a camera, but it only
+works where the world has fixed landmarks to anchor against. A wrapping arena
+has none, so the catch-up reads as the board lurching for no reason.
 
 **On a wrap-around arena that view has no edge at all.** The world is a torus:
 the cell after the last column really *is* the first column, so drawing it
-there is not a trick — it is the truth. The camera is therefore not clamped to
-the boundary, and cells are looked up modulo the arena, which means the board
-simply continues in every direction and a finite map reads as an infinite one.
+there is not a trick — it is the truth. The camera is therefore never clamped
+to the boundary, and cells are looked up modulo the arena, which means the
+board continues in every direction and a finite map reads as an infinite one.
 The teleport players used to experience at the boundary turns out to have been
-an artefact of clamping the camera, not a fact about the game.
+an artefact of clamping the camera, not a fact about the game. The window is
+never wider or taller than the arena, so no cell — and no snake — can appear in
+two places at once.
 
 Because a rival who looks three cells away might be all the way across the
-arena, the frame carries a mark — `┬` and `┴` on the top and bottom, `├` and
-`┤` on the sides — where the world folds. It sits on the border, so it explains
-the topology without covering any of the board.
+arena, the fold is marked twice over: `┬` `┴` `├` `┤` on the frame, and a
+dashed `╎` or `╌` across the board itself. The dashes are laid down before
+anything else, so a snake, a pellet or an effect always paints over them — the
+mark explains the topology and can never hide something that matters.
 
-Two cases deliberately keep a hard edge. A walled arena has nothing past the
-wall, so showing the far side would be a lie. And once the shrinking mode has
-closed the walls in, the ground outside them is real and has to stay visible,
-so that falls back to a clamped view. An arena that fits entirely is drawn
-whole: a teleport is only disorienting when you cannot see where you came out.
+Walled arenas keep a hard edge, in both senses: there is nothing past a wall
+to show, so the view stops there. It still tracks the player exactly up to that
+point. And once the shrinking mode has closed the walls in, the ground outside
+them is real and has to stay visible, so that falls back to a clamped view too.
 
 The lobby browser and the lobby room both warn *before* you commit, naming the
 size that would show all of it — finding out at kickoff is too late. When a
@@ -504,10 +511,10 @@ go test ./...
   bounds.
 - `internal/ui` — every screen rendered across both themes, both glyph sets and
   all four colour depths, asserting no frame exceeds its viewport; that the
-  scrolling view keeps the player on screen while never leaving the arena and
-  holds still while they are away from its edge; that a wrapping view follows a
-  player twice around the world without clamping, never repeats a cell, marks
-  the fold, and that walled and shrinking arenas still stop at their edges; that field
+  camera keeps the player centred and moves by exactly one cell per cell they
+  travel; that a wrapping view follows a player twice around the world without
+  clamping, never repeats a cell, and marks the fold; and that walled and
+  shrinking arenas still stop at their edges; that field
   rows never shift as the selection moves and a notice changes exactly one
   line; that a dialog keeps its size while being scrolled and stops at the
   start of its content; that the countdown never lands on a spawned snake at
