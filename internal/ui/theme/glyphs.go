@@ -45,6 +45,11 @@ type Glyphs struct {
 	// PointLeft, PointRight, PointUp and PointDown tie a popover to the text
 	// it describes, whichever side there was room on.
 	PointLeft, PointRight, PointUp, PointDown string
+
+	// SeamTop, SeamBottom, SeamLeft and SeamRight mark where a wrap-around
+	// arena folds back on itself, drawn on the frame so the topology is
+	// visible without covering any of the board.
+	SeamTop, SeamBottom, SeamLeft, SeamRight string
 	// Spinner frames for connecting and scanning states.
 	Spinner []string
 	// Meter fills a progress or countdown bar.
@@ -67,6 +72,7 @@ var Unicode = Glyphs{
 
 	Bullet: "•", Check: "✓", Cross: "✗", Arrow: "›", Ellipsis: "…",
 	PointLeft: "◂", PointRight: "▸", PointUp: "▴", PointDown: "▾",
+	SeamTop: "┬", SeamBottom: "┴", SeamLeft: "├", SeamRight: "┤",
 	// A shell-like spiral stands in for the snail where emoji cannot be
 	// trusted to measure correctly.
 	Logo:      "◎",
@@ -91,6 +97,7 @@ var ASCIIGlyphs = Glyphs{
 
 	Bullet: "*", Check: "x", Cross: "-", Arrow: ">", Ellipsis: "...",
 	PointLeft: "<", PointRight: ">", PointUp: "^", PointDown: "v",
+	SeamTop: "+", SeamBottom: "+", SeamLeft: "+", SeamRight: "+",
 	Logo:      "@",
 	Spinner:   []string{"|", "/", "-", "\\"},
 	MeterFull: "#", MeterEmpty: ".",

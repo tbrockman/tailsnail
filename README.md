@@ -444,6 +444,25 @@ that rather than wonder where everyone went. Seeing part of the board is a
 real disadvantage; being locked out of a match you have already joined is
 worse.
 
+**On a wrap-around arena that view has no edge at all.** The world is a torus:
+the cell after the last column really *is* the first column, so drawing it
+there is not a trick — it is the truth. The camera is therefore not clamped to
+the boundary, and cells are looked up modulo the arena, which means the board
+simply continues in every direction and a finite map reads as an infinite one.
+The teleport players used to experience at the boundary turns out to have been
+an artefact of clamping the camera, not a fact about the game.
+
+Because a rival who looks three cells away might be all the way across the
+arena, the frame carries a mark — `┬` and `┴` on the top and bottom, `├` and
+`┤` on the sides — where the world folds. It sits on the border, so it explains
+the topology without covering any of the board.
+
+Two cases deliberately keep a hard edge. A walled arena has nothing past the
+wall, so showing the far side would be a lie. And once the shrinking mode has
+closed the walls in, the ground outside them is real and has to stay visible,
+so that falls back to a clamped view. An arena that fits entirely is drawn
+whole: a teleport is only disorienting when you cannot see where you came out.
+
 The lobby browser and the lobby room both warn *before* you commit, naming the
 size that would show all of it — finding out at kickoff is too late. When a
 match starts tailsnail also asks the terminal to grow to fit the whole board
@@ -486,7 +505,9 @@ go test ./...
 - `internal/ui` — every screen rendered across both themes, both glyph sets and
   all four colour depths, asserting no frame exceeds its viewport; that the
   scrolling view keeps the player on screen while never leaving the arena and
-  holds still while they are away from its edge; that field
+  holds still while they are away from its edge; that a wrapping view follows a
+  player twice around the world without clamping, never repeats a cell, marks
+  the fold, and that walled and shrinking arenas still stop at their edges; that field
   rows never shift as the selection moves and a notice changes exactly one
   line; that a dialog keeps its size while being scrolled and stops at the
   start of its content; that the countdown never lands on a spawned snake at

@@ -80,6 +80,13 @@ func (m *Model) header(title, subtitle string) string {
 	}
 
 	if subtitle != "" {
+		want := lipgloss.Width(subtitle)
+		// The subtitle says what is on this screen right now; the badge says
+		// the same thing on every screen. When only one of them fits, keep the
+		// one carrying information.
+		if m.width-used-rightWidth-4 < want && m.width-used-4 >= want {
+			right, rightWidth = "", 0
+		}
 		if avail := m.width - used - rightWidth - 4; avail >= 8 {
 			trimmed := truncate(subtitle, avail)
 			left += m.style.DimText("  " + trimmed)

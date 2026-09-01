@@ -58,8 +58,11 @@ type gameState struct {
 	camera game.Point
 	// clipped records whether the last frame showed only part of the arena.
 	clipped bool
-	// window is the region the last frame drew, for the status line.
+	// window is the region the last frame drew. On a wrapping axis it may run
+	// past the arena's bounds; cells are looked up modulo the arena.
 	window game.Rect
+	// wrapX and wrapY record which axes the last frame drew seamlessly.
+	wrapX, wrapY bool
 }
 
 // start initialises the screen for a new match.
@@ -337,10 +340,23 @@ const (
 // fill the screen. Showing part of the board is a real disadvantage, but it is
 // the difference between playing and being locked out of a match already
 // joined.
+//
+// On a wrap-around arena the window is not clamped to the edges. The world is
+// a torus: the cell to the right of the last column really is the first
+// column, so drawing it there is not a trick, it is the truth. The teleport a
+// player used to experience at the boundary was an artefact of clamping the
+// camera, not a fact about the game.
 func (m *Model) arenaWindow(st game.State, availW, availH int) game.Rect {
 	w, h := m.game.cfg.Width, m.game.cfg.Height
 	viewW := min(w, max(availW, minArenaView))
 	viewH := min(h, max(availH, minArenaView/2))
+
+	// Seamless rendering needs the arena to be the whole grid: once the
+	// shrinking mode has closed the walls in, the ground outside them is real
+	// and has to stay visible, so that falls back to a clamped view.
+	seamless := m.game.cfg.Wrap && st.Arena == m.game.fullArena
+	m.game.wrapX = seamless && viewW < w
+	m.game.wrapY = seamless && viewH < h
 
 	if viewW >= w && viewH >= h {
 		m.game.clipped = false
@@ -350,34 +366,79 @@ func (m *Model) arenaWindow(st game.State, availW, availH int) game.Rect {
 	m.game.clipped = true
 
 	cam := m.game.camera
-	cam.X = clampInt(cam.X, 0, max(w-viewW, 0))
-	cam.Y = clampInt(cam.Y, 0, max(h-viewH, 0))
+	if !m.game.wrapX {
+		cam.X = clampInt(cam.X, 0, max(w-viewW, 0))
+	}
+	if !m.game.wrapY {
+		cam.Y = clampInt(cam.Y, 0, max(h-viewH, 0))
+	}
 
 	if sn := st.SnakeByID(m.game.seat); sn != nil && len(sn.Body) > 0 {
 		head := sn.Head()
 		mx := min(scrollMarginX, max(viewW/2-1, 0))
 		my := min(scrollMarginY, max(viewH/2-1, 0))
-		if head.X-mx < cam.X {
-			cam.X = head.X - mx
+
+		cam.X = track(cam.X, headNear(head.X, cam.X, w, m.game.wrapX), viewW, mx)
+		cam.Y = track(cam.Y, headNear(head.Y, cam.Y, h, m.game.wrapY), viewH, my)
+
+		if m.game.wrapX {
+			// Keep the origin in a sane range so it cannot drift forever.
+			cam.X = mod(cam.X, w)
+		} else {
+			cam.X = clampInt(cam.X, 0, max(w-viewW, 0))
 		}
-		if head.X+mx > cam.X+viewW-1 {
-			cam.X = head.X + mx - viewW + 1
+		if m.game.wrapY {
+			cam.Y = mod(cam.Y, h)
+		} else {
+			cam.Y = clampInt(cam.Y, 0, max(h-viewH, 0))
 		}
-		if head.Y-my < cam.Y {
-			cam.Y = head.Y - my
-		}
-		if head.Y+my > cam.Y+viewH-1 {
-			cam.Y = head.Y + my - viewH + 1
-		}
-		cam.X = clampInt(cam.X, 0, max(w-viewW, 0))
-		cam.Y = clampInt(cam.Y, 0, max(h-viewH, 0))
 	}
 	m.game.camera = cam
 	m.game.window = game.Rect{X0: cam.X, Y0: cam.Y, X1: cam.X + viewW - 1, Y1: cam.Y + viewH - 1}
 	return m.game.window
 }
 
-// cell is one rendered arena position.
+// headNear expresses the head's position in the window's own frame of
+// reference. On a wrapping axis the nearer of the two ways round is the one
+// the player perceives, so that is the one the camera reacts to.
+func headNear(head, origin, span int, wrapping bool) int {
+	if !wrapping {
+		return head
+	}
+	delta := mod(head-origin, span)
+	if delta > span/2 {
+		delta -= span
+	}
+	return origin + delta
+}
+
+// track nudges a camera origin so that head stays at least margin cells inside
+// a window of the given size. It leaves the origin alone while the head is in
+// the dead zone, which is what stops the board sliding on every move.
+func track(origin, head, size, margin int) int {
+	if head-margin < origin {
+		return head - margin
+	}
+	if head+margin > origin+size-1 {
+		return head + margin - size + 1
+	}
+	return origin
+}
+
+// mod is a modulo that returns a non-negative result, which is what wrapping
+// around an arena needs and what Go's % does not give.
+func mod(v, n int) int {
+	if n <= 0 {
+		return 0
+	}
+	v %= n
+	if v < 0 {
+		v += n
+	}
+	return v
+}
+
+// cell is one rendered arena position.// cell is one rendered arena position.
 type cell struct {
 	glyph string
 	color theme.RGB
@@ -486,9 +547,15 @@ func (m *Model) renderArena(st game.State, availW, availH int) string {
 }
 
 // frameArena serialises the visible region of the cell buffer inside a border.
+//
+// On a wrapping axis the window may run past the arena, and cells are looked
+// up modulo it: the board simply continues, with no boundary to cross. The
+// frame carries a mark where the world folds, so a player can see why someone
+// who looks adjacent is in fact all the way across the arena.
 func (m *Model) frameArena(buf []cell, stride int, win game.Rect) string {
 	g := m.style.Glyphs
 	th := m.style.Theme
+	w, h := m.game.cfg.Width, m.game.cfg.Height
 
 	// The border pulses when the arena is contracting, so the closing walls
 	// announce themselves before they reach anybody.
@@ -505,6 +572,7 @@ func (m *Model) frameArena(buf []cell, stride int, win game.Rect) string {
 		borderColor = borderColor.Mix(th.Warn)
 	}
 	border := m.style.SGR(borderColor)
+	seam := m.style.SGR(th.Accent2)
 	reset := ""
 	if m.style.Colored() {
 		reset = theme.Reset
@@ -514,22 +582,59 @@ func (m *Model) frameArena(buf []cell, stride int, win game.Rect) string {
 	var b strings.Builder
 	b.Grow(viewW*viewH*3 + viewH*8)
 
-	b.WriteString(border + g.TopLeft + strings.Repeat(g.Horizontal, viewW) + g.TopRight + reset + "\n")
+	// seamAtColumn and seamAtRow report where the world folds inside the view.
+	seamAtColumn := func(i int) bool { return m.game.wrapX && mod(win.X0+i, w) == 0 }
+	seamAtRow := func(i int) bool { return m.game.wrapY && mod(win.Y0+i, h) == 0 }
+
+	horizontal := func(left, right, mark string) string {
+		var row strings.Builder
+		row.WriteString(border + left)
+		for i := range viewW {
+			if seamAtColumn(i) {
+				row.WriteString(seam + mark + border)
+				continue
+			}
+			row.WriteString(g.Horizontal)
+		}
+		row.WriteString(right + reset)
+		return row.String()
+	}
+
+	b.WriteString(horizontal(g.TopLeft, g.TopRight, g.SeamTop) + "\n")
 	for y := win.Y0; y <= win.Y1; y++ {
-		b.WriteString(border + g.Vertical + reset)
+		sy := y
+		if m.game.wrapY {
+			sy = mod(y, h)
+		}
+		edge := g.Vertical
+		edgeStyle := border
+		if seamAtRow(y - win.Y0) {
+			edge, edgeStyle = g.SeamLeft, seam
+		}
+		b.WriteString(edgeStyle + edge + reset)
+
 		last := theme.RGB{}
 		haveLast := false
 		for x := win.X0; x <= win.X1; x++ {
-			c := buf[y*stride+x]
+			sx := x
+			if m.game.wrapX {
+				sx = mod(x, w)
+			}
+			c := buf[sy*stride+sx]
 			if !haveLast || c.color != last {
 				b.WriteString(m.style.SGR(c.color))
 				last, haveLast = c.color, true
 			}
 			b.WriteString(c.glyph)
 		}
-		b.WriteString(reset + border + g.Vertical + reset + "\n")
+
+		edge, edgeStyle = g.Vertical, border
+		if seamAtRow(y - win.Y0) {
+			edge, edgeStyle = g.SeamRight, seam
+		}
+		b.WriteString(reset + edgeStyle + edge + reset + "\n")
 	}
-	b.WriteString(border + g.BottomLeft + strings.Repeat(g.Horizontal, viewW) + g.BottomRight + reset)
+	b.WriteString(horizontal(g.BottomLeft, g.BottomRight, g.SeamBottom))
 	return b.String()
 }
 

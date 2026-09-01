@@ -2029,3 +2029,189 @@ func TestLeavingWorksFromTheResizeOverlay(t *testing.T) {
 		t.Errorf("screen = %v after leaving, want the browser", m.screen)
 	}
 }
+
+// wrapFixture builds a match on a wrapping arena larger than the terminal, so
+// the view has to straddle the fold.
+func wrapFixture(t *testing.T, w, h int) (*Model, game.Config) {
+	t.Helper()
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height = w, h
+	cfg.Wrap = true
+	m := gameFixture(t, 3, cfg)
+	m.width, m.height = 70, 20
+	lobby := sampleLobby(proto.PhaseInGame, 3)
+	lobby.Config = cfg
+	m.room.apply(lobby)
+	return m, cfg
+}
+
+// placeSnake puts a seat's head at an arena position.
+func placeSnake(m *Model, seat game.PlayerID, x, y int, w int) {
+	sn := m.game.state.SnakeByID(seat)
+	if sn == nil {
+		return
+	}
+	sn.Body = []game.Point{{X: mod(x, w), Y: y}, {X: mod(x-1, w), Y: y}}
+}
+
+func TestAWrappingArenaHasNoVisibleEdge(t *testing.T) {
+	// The world is a torus, so the cell after the last column really is the
+	// first one. Drawing it there removes the teleport a player used to see.
+	m, cfg := wrapFixture(t, 100, 40)
+
+	// Our snake sits three cells from the fold; a rival sits three cells past
+	// it. On a torus they are six cells apart and should look it.
+	placeSnake(m, 0, cfg.Width-3, 20, cfg.Width)
+	placeSnake(m, 1, 3, 20, cfg.Width)
+	m.View() // settle the camera
+
+	arena := stripANSI(m.renderArena(m.game.state, 68, 12))
+	if !m.game.wrapX {
+		t.Fatal("the view is not wrapping; the test proves nothing")
+	}
+
+	// Both heads must appear on the same rendered row, close together.
+	ours, theirs := m.style.Glyphs.Head(0), m.style.Glyphs.Head(1)
+	found := false
+	for _, line := range strings.Split(arena, "\n") {
+		i, j := strings.Index(line, ours), strings.Index(line, theirs)
+		if i < 0 || j < 0 {
+			continue
+		}
+		found = true
+		gap := ansi.StringWidth(line[min(i, j):max(i, j)])
+		if gap > 10 {
+			t.Errorf("the two snakes render %d cells apart; on a torus they are 6", gap)
+		}
+	}
+	if !found {
+		t.Fatalf("the two snakes are not both on screen:\n%s", arena)
+	}
+}
+
+func TestTheFoldIsMarkedOnTheFrame(t *testing.T) {
+	m, cfg := wrapFixture(t, 100, 40)
+	placeSnake(m, 0, cfg.Width-2, 20, cfg.Width)
+	m.View()
+
+	arena := stripANSI(m.renderArena(m.game.state, 68, 12))
+	g := m.style.Glyphs
+	if !strings.Contains(arena, g.SeamTop) || !strings.Contains(arena, g.SeamBottom) {
+		t.Errorf("the fold is not marked on the frame, so a player cannot tell why\n"+
+			"a distant rival looks adjacent:\n%s", arena)
+	}
+}
+
+func TestAWrappingViewNeverRepeatsACell(t *testing.T) {
+	// A window as wide as the arena would show the same snake twice, which
+	// would be worse than a visible edge.
+	m, cfg := wrapFixture(t, 40, 20)
+	for _, avail := range []struct{ w, h int }{{20, 10}, {39, 19}, {40, 20}, {80, 40}} {
+		m.renderArena(m.game.state, avail.w, avail.h)
+		win := m.game.window
+		if win.Width() > cfg.Width || win.Height() > cfg.Height {
+			t.Errorf("avail %dx%d: window %dx%d is larger than the arena",
+				avail.w, avail.h, win.Width(), win.Height())
+		}
+	}
+}
+
+func TestTheCameraFollowsAllTheWayRoundAWrappingArena(t *testing.T) {
+	m, cfg := wrapFixture(t, 100, 40)
+
+	// Walk twice round the world; the player must stay on screen throughout,
+	// with no clamping at the boundary and no jump.
+	for step := range cfg.Width * 2 {
+		x := mod(step, cfg.Width)
+		placeSnake(m, 0, x, 20, cfg.Width)
+		win := m.arenaWindow(m.game.state, 68, 12)
+
+		// The head's offset within the window, taking the short way round.
+		offset := mod(x-win.X0, cfg.Width)
+		if offset >= win.Width() {
+			t.Fatalf("at x=%d the player is outside the window %+v", x, win)
+		}
+		if win.Width() != 68 || win.Height() != 12 {
+			t.Fatalf("at x=%d the window is %dx%d", x, win.Width(), win.Height())
+		}
+	}
+}
+
+func TestAWalledArenaStillStopsAtItsEdges(t *testing.T) {
+	// Without wrap-around there is nothing past the wall, so showing the far
+	// side would be a lie.
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height = 100, 40
+	cfg.Wrap = false
+	m := gameFixture(t, 2, cfg)
+	m.width, m.height = 70, 20
+
+	for _, x := range []int{0, 1, cfg.Width - 2, cfg.Width - 1} {
+		placeSnake(m, 0, x, 20, cfg.Width)
+		win := m.arenaWindow(m.game.state, 68, 12)
+		if m.game.wrapX || m.game.wrapY {
+			t.Fatal("a walled arena rendered seamlessly")
+		}
+		if win.X0 < 0 || win.X1 >= cfg.Width {
+			t.Errorf("at x=%d the window %+v left the arena", x, win)
+		}
+	}
+}
+
+func TestTheShrinkingModeFallsBackToAClampedView(t *testing.T) {
+	// Once the walls close in, the ground outside them is real and has to stay
+	// visible, so that mode cannot be drawn seamlessly.
+	m, cfg := wrapFixture(t, 100, 40)
+	m.game.cfg.Mode = game.ModeShrink
+	m.game.state.Arena = game.Rect{X0: 2, Y0: 2, X1: cfg.Width - 3, Y1: cfg.Height - 3}
+
+	m.arenaWindow(m.game.state, 68, 12)
+	if m.game.wrapX || m.game.wrapY {
+		t.Error("a contracted arena was drawn seamlessly, hiding the closed ground")
+	}
+}
+
+func TestSeamlessFramesKeepTheirExactDimensions(t *testing.T) {
+	m, cfg := wrapFixture(t, 100, 40)
+	for _, x := range []int{0, 1, 50, cfg.Width - 1} {
+		placeSnake(m, 0, x, 20, cfg.Width)
+		m.View()
+		arena := stripANSI(m.renderArena(m.game.state, 68, 12))
+		win := m.game.window
+		lines := strings.Split(arena, "\n")
+		if got, want := len(lines), win.Height()+2; got != want {
+			t.Errorf("x=%d: %d lines, want %d", x, got, want)
+		}
+		for i, l := range lines {
+			if got, want := ansi.StringWidth(l), win.Width()+2; got != want {
+				t.Errorf("x=%d line %d: %d cells, want %d", x, i, got, want)
+			}
+		}
+	}
+}
+
+func TestModWrapsNegatives(t *testing.T) {
+	cases := []struct{ v, n, want int }{
+		{0, 10, 0}, {9, 10, 9}, {10, 10, 0}, {11, 10, 1},
+		{-1, 10, 9}, {-10, 10, 0}, {-11, 10, 9}, {5, 0, 0},
+	}
+	for _, tc := range cases {
+		if got := mod(tc.v, tc.n); got != tc.want {
+			t.Errorf("mod(%d, %d) = %d, want %d", tc.v, tc.n, got, tc.want)
+		}
+	}
+}
+
+func TestTheHeaderKeepsTheSubtitleOverTheBadge(t *testing.T) {
+	// The subtitle says what is on this screen; the badge says the same thing
+	// everywhere. When only one fits, the informative one wins.
+	m, cfg := wrapFixture(t, 100, 40)
+	m.node = runningNode()
+	m.width = 70
+
+	plain := stripANSI(m.View())
+	header := strings.Split(plain, "\n")[0]
+	if !strings.Contains(header, fmt.Sprintf("of %d×%d", cfg.Width, cfg.Height)) {
+		t.Errorf("the clipped-view notice was trimmed away:\n%s", header)
+	}
+}
