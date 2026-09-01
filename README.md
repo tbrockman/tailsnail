@@ -60,6 +60,11 @@ The binaries are static and cgo-free, so there is nothing to install alongside
 them — and because the Tailscale node is embedded, nothing to configure either.
 Verify a download against the `SHA256SUMS` file attached to the same release.
 
+They are built without a symbol table or DWARF, and with the Tailscale
+features a game cannot use compiled out — roughly 7 MB compressed, 18 MB on
+disk. One of those omissions is `logtail`, so a release binary has no code
+path for uploading logs to Tailscale's servers at all.
+
 On macOS, Gatekeeper blocks unsigned downloads the first time. Either
 right-click the binary and choose Open, or clear the quarantine flag:
 
@@ -595,6 +600,18 @@ file to a GitHub release.
 
 The same archives can be built locally with `./scripts/build-release.sh 0.2.0`,
 which is what CI calls, so a release can be reproduced without pushing a tag.
+
+That script is also where the build flags live. `-s -w` drop the symbol table
+and DWARF, which production users have no use for; `-trimpath` keeps absolute
+build paths out of the binary, so the same source at the same commit produces
+the same bytes on any machine; and a list of `ts_omit_` tags removes the
+Tailscale features tailsnail cannot use, which is about 15% of the binary. The
+flake keeps the same list, so `nix build` and a release archive agree.
+
+Two features are conspicuously absent from that list: `serve` and `acme`
+cannot be omitted, because `tsnet` itself references `SetServeConfig` and
+`GetCertificate`. `go install` builds without any of the tags, which is
+correct — it just produces a slightly larger binary.
 
 `ci` runs on every push and pull request: gofmt, `go vet`, the suite under the
 race detector on both Linux and macOS, a cross-compile of every release
