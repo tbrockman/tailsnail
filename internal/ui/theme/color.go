@@ -353,8 +353,11 @@ func dist2(a, b RGB) float64 {
 	return 2*dr*dr + 4*dg*dg + 3*db*db
 }
 
+// clamp01 bounds t to [0,1]. A NaN compares false against every bound, so it
+// would otherwise slip through both and poison the arithmetic downstream —
+// eventually reaching a float-to-int conversion, which is where it bites.
 func clamp01(t float64) float64 {
-	if t < 0 {
+	if math.IsNaN(t) || t < 0 {
 		return 0
 	}
 	if t > 1 {
@@ -369,7 +372,9 @@ func lerpByte(a, b uint8, t float64) uint8 {
 
 func scaleByte(v uint8, f float64) uint8 {
 	out := math.Round(float64(v) * f)
-	if out < 0 {
+	// Same reasoning as clamp01: NaN passes both bounds, and uint8(NaN) is
+	// implementation-defined.
+	if math.IsNaN(out) || out < 0 {
 		return 0
 	}
 	if out > 255 {

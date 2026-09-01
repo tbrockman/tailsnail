@@ -10,6 +10,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -799,10 +800,12 @@ func (m *Model) phase(cycle time.Duration) float64 {
 var _ NodeController = (*tsnode.Node)(nil)
 
 // mod1 returns the fractional part of v, always in [0,1).
+//
+// A non-finite input has no fractional part, and converting one to an int is
+// implementation-defined in Go, so it is refused rather than converted.
 func mod1(v float64) float64 {
-	v -= float64(int64(v))
-	if v < 0 {
-		v++
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
 	}
-	return v
+	return v - math.Floor(v)
 }

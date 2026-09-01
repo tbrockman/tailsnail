@@ -521,6 +521,18 @@ available.
 go test ./...
 ```
 
+Run it under the other architecture too, which macOS can do through Rosetta:
+
+```sh
+GOARCH=amd64 go test ./...
+```
+
+That is not ceremony. Converting a non-finite float to an int is
+implementation-defined in Go — amd64 produces the minimum int64 while arm64
+saturates to zero — so a missing NaN guard panics on one architecture and
+passes silently on the other. Exactly that slipped through a local run and was
+caught by CI. `ci` runs the suite on both Linux and macOS for this reason.
+
 - `internal/game` — the simulation is pure and deterministic, with no I/O and
   no dependencies outside the standard library. Movement, turning, self- and
   mutual collision, kill attribution, wrap-around on all four edges, food and

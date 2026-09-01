@@ -1,5 +1,7 @@
 package theme
 
+import "math"
+
 // Glyphs is the character set used to draw the arena and chrome. Two sets
 // exist: a Unicode one using box-drawing and geometric shapes, and a pure
 // ASCII one selected by --ascii for terminals and fonts that render the
@@ -154,17 +156,20 @@ func (g Glyphs) Ember(progress float64) string {
 }
 
 // pick indexes a frame list by a phase in [0,1).
+//
+// A phase that is not a number gets the first frame. Converting a non-finite
+// float to an int is implementation-defined in Go: amd64 produces the minimum
+// int64 while arm64 saturates to zero, so an unguarded conversion indexes far
+// out of range on one architecture and silently works on the other. That is a
+// bug that only ever shows up on somebody else's machine.
 func pick(frames []string, phase float64) string {
 	if len(frames) == 0 {
 		return " "
 	}
-	phase -= float64(int(phase)) // keep only the fractional part
-	if phase < 0 {
-		phase += 1
+	if math.IsNaN(phase) || math.IsInf(phase, 0) {
+		return frames[0]
 	}
+	phase -= math.Floor(phase) // the fractional part, negatives included
 	i := int(phase * float64(len(frames)))
-	if i >= len(frames) {
-		i = len(frames) - 1
-	}
-	return frames[i]
+	return frames[min(max(i, 0), len(frames)-1)]
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"testing"
@@ -2290,5 +2291,44 @@ func TestTheHeaderKeepsTheSubtitleOverTheBadge(t *testing.T) {
 	header := strings.Split(plain, "\n")[0]
 	if !strings.Contains(header, fmt.Sprintf("of %d×%d", cfg.Width, cfg.Height)) {
 		t.Errorf("the clipped-view notice was trimmed away:\n%s", header)
+	}
+}
+
+func TestAnimationPhaseIsAlwaysAUsableFraction(t *testing.T) {
+	// phase feeds every glyph and colour calculation, several of which end in
+	// a float-to-int conversion. A non-finite value reaching one of those is
+	// implementation-defined, so it must never leave here.
+	m := newTestModel(t)
+	for _, cycle := range []time.Duration{
+		0, -time.Second, time.Nanosecond, time.Second, time.Hour,
+	} {
+		for _, elapsed := range []time.Duration{
+			0, time.Millisecond, time.Hour, 1 << 62,
+		} {
+			m.now = m.startedAt.Add(elapsed)
+			got := m.phase(cycle)
+			if math.IsNaN(got) || math.IsInf(got, 0) {
+				t.Fatalf("cycle %v, elapsed %v: phase = %v", cycle, elapsed, got)
+			}
+			if got < 0 || got >= 1 {
+				t.Fatalf("cycle %v, elapsed %v: phase = %v, want [0,1)", cycle, elapsed, got)
+			}
+		}
+	}
+}
+
+func TestMod1RejectsNonFiniteInput(t *testing.T) {
+	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if got := mod1(v); got != 0 {
+			t.Errorf("mod1(%v) = %v, want 0", v, got)
+		}
+	}
+	cases := []struct{ in, want float64 }{
+		{0, 0}, {0.25, 0.25}, {1, 0}, {1.25, 0.25}, {-0.25, 0.75}, {-1.25, 0.75},
+	}
+	for _, tc := range cases {
+		if got := mod1(tc.in); math.Abs(got-tc.want) > 1e-9 {
+			t.Errorf("mod1(%v) = %v, want %v", tc.in, got, tc.want)
+		}
 	}
 }

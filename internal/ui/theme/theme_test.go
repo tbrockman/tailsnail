@@ -574,7 +574,7 @@ func TestFoodGlyphCyclesThroughItsFrames(t *testing.T) {
 
 func TestFrameSelectionHandlesEdgePhases(t *testing.T) {
 	g := Unicode
-	for _, phase := range []float64{0, 0.999999, 1, 1.5, -0.25, math.Inf(1) * 0} {
+	for _, phase := range []float64{0, 0.999999, 1, 1.5, -0.25, -3.5} {
 		if got := g.Spin(phase); got == "" {
 			t.Errorf("Spin(%v) returned an empty frame", phase)
 		}
@@ -588,6 +588,48 @@ func TestFrameSelectionHandlesEdgePhases(t *testing.T) {
 	empty := Glyphs{}
 	if got := empty.Spin(0.5); got != " " {
 		t.Errorf("an empty frame list returned %q, want a space", got)
+	}
+}
+
+func TestFrameSelectionSurvivesANonFiniteFrame(t *testing.T) {
+	// Converting a non-finite float to an int is implementation-defined in Go:
+	// amd64 yields the minimum int64 while arm64 saturates to zero. An
+	// unguarded conversion therefore indexes far out of range on one
+	// architecture and silently works on the other — a crash that only ever
+	// appears on somebody else's machine.
+	g := Unicode
+	for _, phase := range []float64{
+		math.NaN(), math.Inf(1), math.Inf(-1),
+		math.MaxFloat64, -math.MaxFloat64,
+	} {
+		for _, got := range []string{g.Spin(phase), g.Food(phase), g.Ember(phase)} {
+			if got == "" {
+				t.Errorf("phase %v produced an empty frame", phase)
+			}
+		}
+	}
+}
+
+func TestColourMathSurvivesANonFiniteFactor(t *testing.T) {
+	// A NaN phase reaching the animation would otherwise flow straight into
+	// these, where the same conversion hazard waits.
+	c := RGB{0x40, 0x80, 0xc0}
+	for _, f := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		_ = c.Scale(f)       // must not panic
+		_ = c.Lerp(RGB{}, f) // nor this
+	}
+	if got := clamp01(math.NaN()); got != 0 {
+		t.Errorf("clamp01(NaN) = %v, want 0: NaN passes every bound untouched", got)
+	}
+	if got := scaleByte(200, math.NaN()); got != 0 {
+		t.Errorf("scaleByte(NaN) = %d, want 0", got)
+	}
+	// And the ordinary cases still behave.
+	if got := clamp01(0.5); got != 0.5 {
+		t.Errorf("clamp01(0.5) = %v", got)
+	}
+	if got := scaleByte(100, 2); got != 200 {
+		t.Errorf("scaleByte(100, 2) = %d, want 200", got)
 	}
 }
 

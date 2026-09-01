@@ -13,7 +13,6 @@ import (
 
 	"github.com/tbrockman/tailsnail/internal/game"
 	"github.com/tbrockman/tailsnail/internal/tsnode"
-	"github.com/tbrockman/tailsnail/internal/ui/theme"
 )
 
 // Minimum viewport the chrome needs before any screen is drawn. Anything
@@ -488,16 +487,4 @@ func duration(d time.Duration) string {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
 	return fmt.Sprintf("%dm %02ds", int(d.Minutes()), int(d.Seconds())%60)
-}
-
-// meter renders a horizontal bar of the given width filled to fraction t.
-func (m *Model) meter(width int, t float64, full, empty theme.RGB) string {
-	if width <= 0 {
-		return ""
-	}
-	t = min(max(t, 0), 1)
-	n := int(t*float64(width) + 0.5)
-	g := m.style.Glyphs
-	return m.style.Text(full, strings.Repeat(g.MeterFull, n)) +
-		m.style.Text(empty, strings.Repeat(g.MeterEmpty, width-n))
 }
