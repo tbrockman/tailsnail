@@ -10,9 +10,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/theolol/tailsnail/internal/proto"
-	"github.com/theolol/tailsnail/internal/store"
-	"github.com/theolol/tailsnail/internal/ui/theme"
+	"github.com/tbrockman/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/store"
+	"github.com/tbrockman/tailsnail/internal/ui/theme"
 )
 
 // settingField is one row on the settings screen.

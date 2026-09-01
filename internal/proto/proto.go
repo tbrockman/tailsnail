@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/theolol/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/game"
 )
 
 // Version is the protocol version. Peers refuse handshakes from a different

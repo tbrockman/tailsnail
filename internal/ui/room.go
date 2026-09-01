@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/theolol/tailsnail/internal/game"
-	"github.com/theolol/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/proto"
 )
 
 // roomState is the lobby room's view of the roster.

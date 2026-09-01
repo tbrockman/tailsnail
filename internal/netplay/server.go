@@ -10,12 +10,12 @@ import (
 
 	"tailscale.com/client/tailscale/apitype"
 
-	"github.com/theolol/tailsnail/internal/gossip"
-	"github.com/theolol/tailsnail/internal/logring"
-	"github.com/theolol/tailsnail/internal/proto"
-	"github.com/theolol/tailsnail/internal/store"
-	"github.com/theolol/tailsnail/internal/tsnode"
-	"github.com/theolol/tailsnail/internal/version"
+	"github.com/tbrockman/tailsnail/internal/gossip"
+	"github.com/tbrockman/tailsnail/internal/logring"
+	"github.com/tbrockman/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/store"
+	"github.com/tbrockman/tailsnail/internal/tsnode"
+	"github.com/tbrockman/tailsnail/internal/version"
 )
 
 // handshakeTimeout bounds how long an unidentified connection may sit open.

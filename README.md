@@ -42,18 +42,49 @@ tailsnail  │  lobby   friday night  •  40×20  wrap  20 ticks/s  classic    
 
 ## Install and run
 
+### Download a binary
+
+The easiest way to get someone else playing. Archives for macOS and Linux are
+attached to each [release](https://github.com/tbrockman/tailsnail/releases):
+
+```sh
+VERSION=0.1.0
+PLATFORM=darwin_arm64   # or darwin_amd64, linux_amd64, linux_arm64
+
+curl -fsSL "https://github.com/tbrockman/tailsnail/releases/download/v${VERSION}/tsnail_${VERSION}_${PLATFORM}.tar.gz" \
+  | tar -xz tsnail
+./tsnail
+```
+
+The binaries are static and cgo-free, so there is nothing to install alongside
+them — and because the Tailscale node is embedded, nothing to configure either.
+Verify a download against the `SHA256SUMS` file attached to the same release.
+
+On macOS, Gatekeeper blocks unsigned downloads the first time. Either
+right-click the binary and choose Open, or clear the quarantine flag:
+
+```sh
+xattr -d com.apple.quarantine tsnail
+```
+
+### Go
+
+```sh
+go install github.com/tbrockman/tailsnail/cmd/tsnail@latest
+```
+
 ### Nix
 
 ```sh
-nix run github:theolol/tailsnail       # run it
-nix build github:theolol/tailsnail     # ./result/bin/tsnail
+nix run github:tbrockman/tailsnail       # run it
+nix build github:tbrockman/tailsnail     # ./result/bin/tsnail
 nix develop                            # dev shell: go, gopls, staticcheck, delve
 ```
 
 The flake provides `packages.default`, an app, and a dev shell for both
 `aarch64-darwin` and `x86_64-linux`.
 
-### Plain Go
+### From source
 
 Requires Go 1.26.6 or newer (a `tailscale.com` dependency sets the floor).
 
@@ -547,6 +578,28 @@ internal/logring   sanitising log ring buffer
 internal/ui        Bubble Tea screens
 internal/ui/theme  colour model, themes, glyph sets
 ```
+
+## Releasing
+
+Tag and push; everything else happens in CI.
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The release workflow runs the tests, cross-compiles all four targets from a
+single runner — pure Go with cgo disabled, so there is no need for a build
+matrix or a runner per platform — and attaches the archives and a `SHA256SUMS`
+file to a GitHub release.
+
+The same archives can be built locally with `./scripts/build-release.sh 0.2.0`,
+which is what CI calls, so a release can be reproduced without pushing a tag.
+
+`ci` runs on every push and pull request: gofmt, `go vet`, the suite under the
+race detector on both Linux and macOS, a cross-compile of every release
+target, and a `nix build` — the last of which is the only thing that catches a
+stale `vendorHash` in the flake.
 
 ## Licence
 

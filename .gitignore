@@ -9,3 +9,6 @@
 # Editor and OS noise
 .DS_Store
 *.swp
+
+# Release archives
+/dist/

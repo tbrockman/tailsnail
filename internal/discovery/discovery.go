@@ -20,10 +20,10 @@ import (
 
 	"tailscale.com/ipn/ipnstate"
 
-	"github.com/theolol/tailsnail/internal/gossip"
-	"github.com/theolol/tailsnail/internal/logring"
-	"github.com/theolol/tailsnail/internal/proto"
-	"github.com/theolol/tailsnail/internal/version"
+	"github.com/tbrockman/tailsnail/internal/gossip"
+	"github.com/tbrockman/tailsnail/internal/logring"
+	"github.com/tbrockman/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/version"
 )
 
 // Tunables for the probe loop. The intervals are deliberately gentle: a

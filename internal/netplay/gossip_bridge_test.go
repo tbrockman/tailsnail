@@ -3,8 +3,8 @@ package netplay
 import (
 	"context"
 
-	"github.com/theolol/tailsnail/internal/gossip"
-	"github.com/theolol/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/gossip"
+	"github.com/tbrockman/tailsnail/internal/proto"
 )
 
 // gossipInitiate is a thin alias so the integration test can drive the dialing

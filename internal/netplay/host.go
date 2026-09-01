@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/theolol/tailsnail/internal/game"
-	"github.com/theolol/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/proto"
 )
 
 // Host loop tunables.

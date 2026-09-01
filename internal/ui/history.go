@@ -9,8 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/theolol/tailsnail/internal/proto"
-	"github.com/theolol/tailsnail/internal/store"
+	"github.com/tbrockman/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/store"
 )
 
 // historyTab selects between the two views on stored match records.

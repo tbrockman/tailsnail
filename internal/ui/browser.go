@@ -11,9 +11,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/theolol/tailsnail/internal/discovery"
-	"github.com/theolol/tailsnail/internal/netplay"
-	"github.com/theolol/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/discovery"
+	"github.com/tbrockman/tailsnail/internal/netplay"
+	"github.com/tbrockman/tailsnail/internal/proto"
 )
 
 // browserState holds the lobby browser's view of discovery.

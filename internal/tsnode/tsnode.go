@@ -29,8 +29,8 @@ import (
 	"tailscale.com/net/netns"
 	"tailscale.com/tsnet"
 
-	"github.com/theolol/tailsnail/internal/logring"
-	"github.com/theolol/tailsnail/internal/store"
+	"github.com/tbrockman/tailsnail/internal/logring"
+	"github.com/tbrockman/tailsnail/internal/store"
 )
 
 // Phase is the coarse onboarding state the UI renders. It collapses the

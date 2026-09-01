@@ -18,7 +18,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/theolol/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/proto"
 )
 
 // MaxRecordsPerExchange bounds how many records move in one direction per

@@ -3,7 +3,7 @@ package version
 
 // Version is the release version. It is overridable at build time with
 //
-//	-ldflags "-X github.com/theolol/tailsnail/internal/version.Version=..."
+//	-ldflags "-X github.com/tbrockman/tailsnail/internal/version.Version=..."
 var Version = "0.1.0"
 
 // Commit is the git revision the binary was built from, when known.

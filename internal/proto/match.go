@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/theolol/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/game"
 )
 
 // MatchResultVersion is the schema version of a MatchResult. It is part of the

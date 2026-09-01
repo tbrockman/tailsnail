@@ -14,10 +14,10 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
 
-	"github.com/theolol/tailsnail/internal/game"
-	"github.com/theolol/tailsnail/internal/logring"
-	"github.com/theolol/tailsnail/internal/proto"
-	"github.com/theolol/tailsnail/internal/store"
+	"github.com/tbrockman/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/logring"
+	"github.com/tbrockman/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/store"
 )
 
 // fakeNode stands in for the tailnet with a loopback listener. It is the

@@ -9,10 +9,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/theolol/tailsnail/internal/game"
-	"github.com/theolol/tailsnail/internal/netplay"
-	"github.com/theolol/tailsnail/internal/proto"
-	"github.com/theolol/tailsnail/internal/ui/theme"
+	"github.com/tbrockman/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/netplay"
+	"github.com/tbrockman/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/ui/theme"
 )
 
 // Effect durations. All are short: an effect that outlives the moment it

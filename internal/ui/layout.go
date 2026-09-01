@@ -11,9 +11,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/theolol/tailsnail/internal/game"
-	"github.com/theolol/tailsnail/internal/tsnode"
-	"github.com/theolol/tailsnail/internal/ui/theme"
+	"github.com/tbrockman/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/tsnode"
+	"github.com/tbrockman/tailsnail/internal/ui/theme"
 )
 
 // Minimum viewport the chrome needs before any screen is drawn. Anything

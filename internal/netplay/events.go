@@ -11,8 +11,8 @@
 package netplay
 
 import (
-	"github.com/theolol/tailsnail/internal/game"
-	"github.com/theolol/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/proto"
 )
 
 // Event is something the UI needs to react to. Both the host and the client

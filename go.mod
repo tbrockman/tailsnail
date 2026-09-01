@@ -1,4 +1,4 @@
-module github.com/theolol/tailsnail
+module github.com/tbrockman/tailsnail
 
 go 1.26.6
 

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/theolol/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/game"
 )
 
 type testPlayer struct {

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/theolol/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/proto"
 )
 
 // Store is the append-only log of attested match records, keyed by match ID.

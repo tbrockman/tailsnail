@@ -15,13 +15,13 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/theolol/tailsnail/internal/discovery"
-	"github.com/theolol/tailsnail/internal/logring"
-	"github.com/theolol/tailsnail/internal/netplay"
-	"github.com/theolol/tailsnail/internal/proto"
-	"github.com/theolol/tailsnail/internal/store"
-	"github.com/theolol/tailsnail/internal/tsnode"
-	"github.com/theolol/tailsnail/internal/ui/theme"
+	"github.com/tbrockman/tailsnail/internal/discovery"
+	"github.com/tbrockman/tailsnail/internal/logring"
+	"github.com/tbrockman/tailsnail/internal/netplay"
+	"github.com/tbrockman/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/store"
+	"github.com/tbrockman/tailsnail/internal/tsnode"
+	"github.com/tbrockman/tailsnail/internal/ui/theme"
 )
 
 // frameInterval drives every animation. It is deliberately decoupled from the

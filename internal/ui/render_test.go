@@ -13,14 +13,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/theolol/tailsnail/internal/discovery"
-	"github.com/theolol/tailsnail/internal/game"
-	"github.com/theolol/tailsnail/internal/logring"
-	"github.com/theolol/tailsnail/internal/netplay"
-	"github.com/theolol/tailsnail/internal/proto"
-	"github.com/theolol/tailsnail/internal/store"
-	"github.com/theolol/tailsnail/internal/tsnode"
-	"github.com/theolol/tailsnail/internal/ui/theme"
+	"github.com/tbrockman/tailsnail/internal/discovery"
+	"github.com/tbrockman/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/logring"
+	"github.com/tbrockman/tailsnail/internal/netplay"
+	"github.com/tbrockman/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/store"
+	"github.com/tbrockman/tailsnail/internal/tsnode"
+	"github.com/tbrockman/tailsnail/internal/ui/theme"
 )
 
 // newTestModel builds a model with real storage but no network. Rendering

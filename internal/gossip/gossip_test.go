@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/theolol/tailsnail/internal/game"
-	"github.com/theolol/tailsnail/internal/proto"
+	"github.com/tbrockman/tailsnail/internal/game"
+	"github.com/tbrockman/tailsnail/internal/proto"
 )
 
 // memStore is an in-memory Recorder, so the exchange can be exercised without

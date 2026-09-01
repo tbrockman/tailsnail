@@ -28,8 +28,8 @@
           ldflags = [
             "-s"
             "-w"
-            "-X github.com/theolol/tailsnail/internal/version.Version=${version}"
-            "-X github.com/theolol/tailsnail/internal/version.Commit=${rev}"
+            "-X github.com/tbrockman/tailsnail/internal/version.Version=${version}"
+            "-X github.com/tbrockman/tailsnail/internal/version.Commit=${rev}"
           ];
 
           # The suite is pure Go with no network dependencies, so it is cheap
@@ -38,7 +38,7 @@
 
           meta = with pkgs.lib; {
             description = "Peer-to-peer terminal Snake played over your tailnet";
-            homepage = "https://github.com/theolol/tailsnail";
+            homepage = "https://github.com/tbrockman/tailsnail";
             license = licenses.mit;
             mainProgram = "tsnail";
             platforms = platforms.unix;
