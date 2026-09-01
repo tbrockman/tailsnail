@@ -1481,41 +1481,72 @@ func TestTheCountdownShowsTheBoard(t *testing.T) {
 	}
 }
 
-func TestTheCountdownDigitDoesNotCoverASnake(t *testing.T) {
-	// Snakes spawn clear of the middle precisely so the digit does not land on
-	// one while players are looking for themselves.
+func TestTheCountdownNeverCoversThePlayer(t *testing.T) {
+	// The camera keeps the player at the centre of the view, which is exactly
+	// where the countdown used to be drawn. It now sits clear of them.
 	for _, size := range []struct{ w, h int }{
-		{game.MinWidth, game.MinHeight}, {30, 16}, {46, 18}, {80, 30},
+		{game.MinWidth, game.MinHeight}, {30, 16}, {46, 18}, {100, 40},
 	} {
-		cfg := game.DefaultConfig()
-		cfg.Width, cfg.Height = size.w, size.h
-		for seats := 2; seats <= game.MaxPlayers; seats++ {
-			ids := make([]game.PlayerID, seats)
-			for i := range ids {
-				ids[i] = game.PlayerID(i)
-			}
-			sim, err := game.New(cfg, ids)
-			if err != nil {
-				t.Fatal(err)
-			}
-			// The block the digit occupies, centred on the arena. Small
-			// arenas fall back to a single character, which cannot cover
-			// anything the spawn ring keeps clear of the middle.
-			digitW, digitH := countdownDigitWidth, countdownDigitHeight
-			if cfg.Height < 14 || cfg.Width < 24 {
-				digitW, digitH = 1, 1
-			}
-			x0 := (cfg.Width - digitW) / 2
-			y0 := (cfg.Height - digitH) / 2
+		for _, wrap := range []bool{true, false} {
+			cfg := game.DefaultConfig()
+			cfg.Width, cfg.Height, cfg.Wrap = size.w, size.h, wrap
+			m := gameFixture(t, 4, cfg)
+			m.width, m.height = 90, 30
 
-			for _, sn := range sim.State().Snakes {
-				h := sn.Head()
-				if h.X >= x0 && h.X < x0+digitW && h.Y >= y0 && h.Y < y0+digitH {
-					t.Errorf("%dx%d with %d seats: seat %d spawns at %v, under the countdown",
-						size.w, size.h, seats, sn.ID, h)
+			lobby := sampleLobby(proto.PhaseCountdown, 4)
+			lobby.Config = cfg
+			lobby.Countdown = 3
+			m.room.apply(lobby)
+
+			// Try the player in a spread of positions, including the corners.
+			for _, p := range []game.Point{
+				{X: 0, Y: 0}, {X: size.w - 1, Y: 0}, {X: 0, Y: size.h - 1},
+				{X: size.w - 1, Y: size.h - 1}, {X: size.w / 2, Y: size.h / 2},
+			} {
+				placeSnake(m, 0, p.X, p.Y, cfg.Width)
+				view := m.View()
+				checkFrame(t, m, "countdown", view)
+
+				// The player's own head glyph must still be on screen.
+				if !strings.Contains(stripANSI(view), m.style.Glyphs.Head(0)) {
+					t.Errorf("%dx%d wrap=%v at %+v: the countdown covered the player\n%s",
+						size.w, size.h, wrap, p, stripANSI(view))
 				}
 			}
 		}
+	}
+}
+
+func TestTheCountdownSitsAboveThePlayerWhenThereIsRoom(t *testing.T) {
+	cfg := game.DefaultConfig()
+	cfg.Width, cfg.Height, cfg.Wrap = 60, 30, true
+	m := gameFixture(t, 2, cfg)
+	m.width, m.height = 90, 30
+
+	lobby := sampleLobby(proto.PhaseCountdown, 2)
+	lobby.Config = cfg
+	lobby.Countdown = 2
+	m.room.apply(lobby)
+	placeSnake(m, 0, 30, 15, cfg.Width)
+
+	lines := strings.Split(stripANSI(m.View()), "\n")
+	headRow, digitRow := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, m.style.Glyphs.Head(0)) {
+			headRow = i
+		}
+		if digitRow < 0 && strings.Contains(line, "█") {
+			digitRow = i
+		}
+	}
+	if headRow < 0 {
+		t.Fatal("the player is not on screen")
+	}
+	if digitRow < 0 {
+		t.Fatal("the countdown is not on screen")
+	}
+	if digitRow >= headRow {
+		t.Errorf("the countdown starts on row %d, at or below the player on row %d", digitRow, headRow)
 	}
 }
 
@@ -2088,12 +2119,15 @@ func wrapFixture(t *testing.T, w, h int) (*Model, game.Config) {
 	return m, cfg
 }
 
-// placeSnake puts a seat's head at an arena position.
+// placeSnake puts a live seat's head at an arena position. It revives the
+// snake as well as moving it: a fixture that has already been stepped may have
+// eliminated it, and a dead snake is not drawn at all.
 func placeSnake(m *Model, seat game.PlayerID, x, y int, w int) {
 	sn := m.game.state.SnakeByID(seat)
 	if sn == nil {
 		return
 	}
+	sn.Alive = true
 	sn.Body = []game.Point{{X: mod(x, w), Y: y}, {X: mod(x-1, w), Y: y}}
 }
 

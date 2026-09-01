@@ -265,20 +265,43 @@ func (m *Model) viewGame() string {
 	return m.chrome(m.room.state.Name, subtitle, frame, hints)
 }
 
-// overlayCountdown draws the starting countdown over the middle of the arena.
+// overlayCountdown draws the starting countdown just above the player.
 //
-// The board is already on screen by this point, so players can pick out their
-// own snake and see the others before anything moves. Snakes are spawned clear
-// of the centre so the digit does not cover one of them.
+// It used to sit in the middle of the arena, which worked while snakes were
+// spawned around a ring clear of the centre. Now that the camera keeps the
+// player centred, the middle of the view is precisely where their snake is —
+// so the countdown is placed relative to the player instead, and covers the
+// one thing they are looking for.
 func (m *Model) overlayCountdown(frame, body, arena, hud string, top, left int) string {
 	block := m.countdownBlock(m.room.state.Countdown, m.compactCountdown())
+	blockW, blockH := lipgloss.Width(block), lipgloss.Height(block)
 
-	arenaTop := top + lipgloss.Height(hud)
-	arenaLeft := left + (lipgloss.Width(body)-lipgloss.Width(arena))/2
+	win := m.game.window
+	viewW, viewH := win.Width(), win.Height()
 
-	row := arenaTop + (lipgloss.Height(arena)-lipgloss.Height(block))/2
-	col := arenaLeft + (lipgloss.Width(arena)-lipgloss.Width(block))/2
-	return overlayAt(frame, block, max(row, arenaTop), max(col, arenaLeft))
+	// The arena's interior begins one cell in from its frame.
+	interiorTop := top + lipgloss.Height(hud) + 1
+	interiorLeft := left + (lipgloss.Width(body)-lipgloss.Width(arena))/2 + 1
+
+	// Where the player sits inside the view.
+	px, py := viewW/2, viewH/2
+	if sn := m.game.state.SnakeByID(m.game.seat); sn != nil && len(sn.Body) > 0 {
+		head := sn.Head()
+		px = mod(head.X-win.X0, m.game.cfg.Width)
+		py = mod(head.Y-win.Y0, m.game.cfg.Height)
+	}
+
+	// Sit one row clear of the head, dropping below it when there is no room
+	// above — better to cover empty ground under the player than the player.
+	const gap = 1
+	row := py - blockH - gap
+	if row < 0 {
+		row = py + 1 + gap
+	}
+	row = clampInt(row, 0, max(viewH-blockH, 0))
+	col := clampInt(px-blockW/2, 0, max(viewW-blockW, 0))
+
+	return overlayAt(frame, block, interiorTop+row, interiorLeft+col)
 }
 
 // countdownDigitWidth and countdownDigitHeight are the block digit's size, and
